@@ -1,1 +1,0 @@
-"C:\Program Files\WinRAR\WinRAR.exe" a -afzip -r "..\project_backup.zip" "*" -x*\node_modules\*
