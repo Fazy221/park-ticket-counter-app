@@ -1,0 +1,36 @@
+node_modules/
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# Native build artifacts
+.gradle/
+build/
+*.keystore
+*.p12
+*.mobileprovision
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+
+# Logs and caches
+*.log
+.eslintcache
+.npm/
+.yarn/
+coverage/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local backend data
+backend/pb_data/data/
+backend/pb_data/storage/

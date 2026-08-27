@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "GateMark",
+    "slug": "gatemark",
+    "scheme": "gatemark",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1F4D3A"
+    },
+    "android": {
+      "package": "com.gatemark.counter",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1F4D3A"
+      },
+      "permissions": [
+        "CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "GateMark needs the camera to scan ticket QR codes."
+        }
+      ],
+      "expo-asset"
+    ]
+  }
+}
