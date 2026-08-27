@@ -45,17 +45,26 @@ routerAdd("POST", "/api/redeem", (e) => {
   let result;
 
   $app.runInTransaction((txApp) => {
-    let ticket;
-    try {
-      ticket = txApp.findFirstRecordByFilter(
-        "tickets",
-        "qr_code = {:qr_code}",
-        { qr_code: data.qr_code }
-      );
-    } catch (err) {
-      throw new NotFoundError("Unknown QR code");
-    }
-
+      let ticket;
+  try {
+    ticket = txApp.findFirstRecordByFilter(
+      "tickets",
+      "qr_code = {:qr_code}",
+      { qr_code: data.qr_code }
+    );
+  } catch (err) {
+    // No local record for this QR code - GateMark never receives Funland's
+    // own ticket data, so as far as this system is concerned, the first
+    // scan of any code *is* that ticket's creation. Create it as "valid"
+    // and fall straight into the normal redemption branch below, so every
+    // later scan of the same code correctly reports as a duplicate instead
+    // of creating a second ticket.
+    const ticketsCollection = txApp.findCollectionByNameOrId("tickets");
+    ticket = new Record(ticketsCollection);
+    ticket.set("qr_code", data.qr_code);
+    ticket.set("status", "valid");
+    txApp.save(ticket);
+  }
     let counter;
     try {
       counter = txApp.findRecordById("counters", data.counter_id);

@@ -22,10 +22,33 @@ and the migration applies automatically.
   documented. Cost: any `staff` rows created against the old schema are
   gone after this runs. Fine right now since the schema only just landed;
   **not** fine if you've already seeded real staff - export first.
+  Repointing the `tickets.staff_id` and `ticket_events.actor_staff_id`
+  relations at the new `staff` collection needs two separate `app.save()`
+  calls per field - remove the old field and save, *then* add the new one
+  and save. PocketBase diffs a save payload by field name against the DB,
+  so removing and re-adding a same-named relation field within a single
+  `app.save()` still reads as an in-place change to an immutable
+  `collectionId` and gets rejected. Applied in both `up()` and `down()`.
 - **`auth.pb.js`** - `POST /api/staff-login` (username + PIN -> token).
 - **`redeem.pb.js`** - now requires a `staff`-scoped token and takes the
   actor from it, instead of trusting a `staff_id` in the request body like
   the first version did.
+  **Scope change since the previous step:** GateMark is not integrated
+  with Funland's own ticketing system and never will receive its ticket
+  data, so an unknown QR code no longer errors out. The first scan of any
+  code now creates that ticket's record on the fly (status `valid`, event
+  logged as `scanned`) and falls straight into the normal redemption
+  branch, so every later scan of the same code correctly comes back as
+  "already redeemed" - the first scan *is* the ticket's creation event as
+  far as this system is concerned. The two-devices-scan-a-brand-new-code
+  race is not a real risk: PocketBase serializes writes app-wide, so as
+  long as the lookup-and-create-if-missing logic stays inside the same
+  `$app.runInTransaction` block (it does), the second request can't even
+  start its own lookup until the first has committed the new ticket -
+  it'll land in the "already redeemed" branch, not create a duplicate. No
+  additional locking was needed. No `event_type` schema change was needed
+  either - a first-time auto-created ticket just logs as `scanned` like
+  any other first scan.
 - **`undo_scan.pb.js`** - `POST /api/undo-scan`, the mobile app's
   self-service undo. 2-minute window, same staff member only, checked
   against `server_time`.
@@ -35,19 +58,53 @@ and the migration applies automatically.
 - **`public_lists.pb.js`** - two unauthenticated routes
   (`/api/staff-names`, `/api/counters`) so the login picker and the
   device-setup screen have something to show before any token exists.
+  Both filter on `active = true` - a record with `active` left unset
+  simply won't show up even though it exists, which looks like a broken
+  connection but isn't.
 
 **Read before deploying:** a 4-6 digit PIN as a PocketBase password is
 convenient, not strong. There's no extra rate-limiting beyond PocketBase's
 defaults. That's a reasonable trade for a LAN-only counter app - an
 attacker would need to already be on the local network - but worth
-revisiting if that assumption ever changes.
+revisiting if that assumption ever changes. Password min length is
+relaxed to 4 to allow this. One consequence of `staff` now being an auth
+collection: adding a staff row by hand in the PocketBase dashboard needs
+`username` and `password` (the PIN) filled in, not just `name`/`role` -
+skipping them leaves a record that exists but can't log in and won't
+explain why.
+
+**Running it on the LAN:** the binary has to be started as
+`./pocketbase serve --http=0.0.0.0:8090` (not the `127.0.0.1` default,
+which no phone on the network can reach) and it has to be run from
+*inside* `backend/`, not wherever the downloaded binary happens to sit -
+PocketBase only auto-applies `pb_migrations`/`pb_hooks` that are next to
+the binary's own working directory, so running it from elsewhere silently
+skips this whole step's migration (you'd just see the default `users`
+collection and nothing else). Phones need the laptop's actual LAN IPv4
+(`ipconfig` -> Wi-Fi adapter), and Windows Firewall needs to allow that
+port on the Private network profile.
 
 ## The mobile app (`mobile/`)
 
-Standard Expo project - `cd mobile && npm install && npx expo start`.
+Standard Expo project - `cd mobile && npm install && npx expo start`. Use
+`npx expo install <package>` for any Expo package from here on, never
+plain `npm install` - npm's installer nests packages like `expo-asset`
+inside `node_modules/expo/node_modules/...` instead of hoisting them,
+which Metro's resolver never finds (`expo-asset cannot be found` on
+start); `expo install` adds it as a direct, SDK-matched dependency and
+fixes the hoisting.
+
 Point a physical device at it (Expo Go won't have camera barcode scanning
 in all cases; a dev build is more reliable - `npx expo run:android` or
-`eas build --profile development`).
+`eas build --profile development`). One more Expo Go gotcha: the Play
+Store version auto-updates to the newest SDK, so it will report "Project
+is incompatible with this version" against a project pinned to an older
+SDK (this project is on SDK 52) - either sideload the matching Expo Go
+build from `expo.dev/go?sdkVersion=52&platform=android&device=true`, or
+treat this as another point in favor of moving to an EAS development
+build sooner rather than later, since custom native permissions/config
+(camera) don't fit inside Expo Go anyway and this mismatch will recur on
+every SDK bump.
 
 ### One interpretation call worth flagging
 
