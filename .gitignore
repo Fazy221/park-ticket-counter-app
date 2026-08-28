@@ -32,8 +32,9 @@ Thumbs.db
 .idea/
 
 # Local backend data
-backend/pb_data/data/
-backend/pb_data/storage/
+backend/pb_data
 
 # Misc
 *.bat
+
+mobile/assets/*.py

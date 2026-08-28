@@ -167,10 +167,45 @@ This isn't just a stricter version of the old heuristic - it fixes a real miscla
 
 One edge worth knowing about, not a bug: if a scan's response gets cached, the ticket is then undone via /api/undo-scan, and only after that the original request finally retries (possible if a phone stayed offline long enough for staff to undo from a different device first), the retry replays the original "valid" result from before the undo - not the ticket's current state. That's correct idempotency behavior, not a glitch: the cached response is a record of what that request produced when it first ran, not a live lookup. It just means the replayed screen and the ticket's actual current status can briefly disagree if you check both at once.
 
+### App icons & splash
+
+`assets/icon.png`, `assets/adaptive-icon.png`, and `assets/splash.png` now
+exist - `app.json` already pointed at these paths, so no config changes
+needed.
+
+The mark: a rounded-top "gate" arch with a checkmark knocked out of its
+center (negative space, not drawn on top) - the arch nods to "Gate," the
+checkmark nods to "Mark" and echoes the `CheckCircle2` icon already used
+in-app for a valid scan (`lucide-react-native`), so the launcher icon
+reads as "this validates things" without literally duplicating the
+in-app success badge. Two flat colors only - `colors.primary` (`#1F4D3A`)
+and `slate50` (`#F8FAFC`) - since a two-tone knockout survives being
+scaled down to a 48px launcher icon; gradients or thin strokes wouldn't.
+
+Three variants, deliberately sized differently rather than one export
+reused three ways:
+
+- `icon.png` - opaque, full-bleed, generous mark (nothing clips this
+  one).
+- `adaptive-icon.png` - transparent, sized and checked against Android's
+  actual 66/108 safe-zone circle plus circle/squircle/rounded-square
+  launcher masks, since the raw 1024x1024 viewport isn't what OEM
+  launchers actually show.
+- `splash.png` - transparent, smaller and padded (sits under
+  `resizeMode: "contain"` in `app.json`), nudged up a few percent from
+  mathematical center - the arch's flat feet read as visually heavier
+  than its round top, so a bounding-box-centered mark looks like it's
+  hanging low on a tall phone screen.
+
+No SVG renderer was available in the environment this was produced in,
+so the mark was built directly in Pillow (supersampled 4x, downsampled
+with Lanczos) rather than from an actual vector source. `assets-source/
+gen_mark.py` regenerates all three if the proportions, colors, or concept
+ever need to change - it isn't imported anywhere and doesn't need to
+ship, just kept alongside the assets it produced.
+
 ### What's stubbed or deliberately left out
 
-- **App icons/splash** - `app.json` references `./assets/icon.png` etc.
-  that don't exist yet; drop real ones in before building.
 - **EAS Build/signing config** - no `eas.json`, no keystore. Plan section 9
   calls for `eas build --platform android --profile production`; that
   needs a `eas.json` with a `production` profile and Android credentials,
