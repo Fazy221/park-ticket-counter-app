@@ -204,12 +204,54 @@ gen_mark.py` regenerates all three if the proportions, colors, or concept
 ever need to change - it isn't imported anywhere and doesn't need to
 ship, just kept alongside the assets it produced.
 
+### EAS Build & signing (`mobile/eas.json`)
+
+Three profiles - `development`, `preview`, `production` - matching what
+`package.json`'s `build:android` script already references:
+
+- **`development`** - `developmentClient: true` + internal distribution,
+  APK. This is what `eas build --profile development` needs for a real
+  dev client - camera scanning requires one; Expo Go can't hold this
+  project's custom native config.
+- **`preview`** - internal APK, no dev client. Not referenced by name
+  anywhere else, but it's the standard middle rung: a production-shaped
+  build you can sideload onto a test tablet before committing to
+  `production`.
+- **`production`** - internal distribution, APK, not `app-bundle`.
+  **Interpretation call:** built as a sideloadable APK, not a Play Store
+  submission - confirmed this is an internal kiosk app for counter
+  tablets, not a public listing, so "production" means "the stable build
+  that goes on real counter devices," not "the build submitted to
+  Google." No `submit` block, no Google service-account key.
+
+`"appVersionSource": "remote"` is set under `cli` so EAS auto-increments
+the Android version code per build instead of it being hand-bumped in
+`app.json`. Signing uses `credentialsSource: "remote"` (the default) -
+EAS holds the keystore in the linked Expo account; the `.jks` file is
+never touched directly, and every later build reuses the same key
+automatically once it's generated.
+
+**Account-specific setup this file can't do on its own** (tied to the
+Expo account, not the repo): `eas login`, `eas init` (writes
+`extra.eas.projectId` into `app.json` - commit that change alongside
+`eas.json`), and the first build's "Generate a new Android Keystore?"
+prompt (answer yes, once - every later build reuses it).
+
+**SDK 52 + dev-client gotcha hit while first building this:** `eas build
+--profile development` auto-installs `expo-dev-client` if it isn't
+present, and that package pulls in Jetpack Compose for its dev-menu UI.
+SDK 52's default Kotlin version (1.9.24) is one patch behind what that
+Compose Compiler version requires (1.9.25), so the Gradle step fails with
+a Kotlin/Compose version-mismatch error before it ever reaches
+project-specific code. Fixed by adding `expo-build-properties` and
+pinning `android.kotlinVersion` to `"1.9.25"` in `app.json`'s `plugins`
+array. This is a known SDK 52 + dev-client combination, not anything
+project-specific, and is worth rechecking (Compose Compiler's required
+Kotlin version vs. the SDK default) any time `expo-dev-client` gets
+reinstalled after a future SDK bump.
+
 ### What's stubbed or deliberately left out
 
-- **EAS Build/signing config** - no `eas.json`, no keystore. Plan section 9
-  calls for `eas build --platform android --profile production`; that
-  needs a `eas.json` with a `production` profile and Android credentials,
-  which are per-account setup I can't generate for you.
 - **Session log pagination** - caps at 200 events server-side; fine for a
   day's volume at one counter, would need paging for anything heavier.
 - **No offline login.** Logging in requires reaching the server (PIN

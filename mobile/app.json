@@ -20,7 +20,12 @@
         "backgroundColor": "#1F4D3A"
       },
       "permissions": [
-        "CAMERA"
+        "CAMERA",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "CAMERA",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "plugins": [
@@ -33,7 +38,32 @@
           "cameraPermission": "GateMark needs the camera to scan ticket QR codes."
         }
       ],
-      "expo-asset"
-    ]
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25",
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "fa819e0f-0e20-49fa-b32e-66191d4899f6"
+      }
+    },
+    "owner": "fazy221",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/fa819e0f-0e20-49fa-b32e-66191d4899f6"
+    },
+    "ios": {}
   }
 }
