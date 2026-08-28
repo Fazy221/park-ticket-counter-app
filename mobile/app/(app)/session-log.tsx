@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, FlatList, RefreshControl, Pressable } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import { Clock, CheckCircle2, XCircle, RotateCw, AlertTriangle } from "lucide-react-native";
 import { colors } from "@/theme/colors";
 import { fonts, type } from "@/theme/typography";
@@ -28,32 +29,53 @@ export default function SessionLog() {
     setServerError(null);
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
+    const params = {
+      counter_id: config.counterId,
+      from: startOfDay.toISOString(),
+      to: new Date().toISOString(),
+    };
     try {
       const [events, staff] = await Promise.all([
-        fetchSessionLog(config.serverUrl, token, {
-          counter_id: config.counterId,
-          from: startOfDay.toISOString(),
-          to: new Date().toISOString(),
-        }),
+        fetchSessionLog(config.serverUrl, token, params),
         fetchStaffNames(config.serverUrl),
       ]);
+      // TEMP DEBUG - remove once confirmed fixed. Check the Metro/terminal
+      // logs after a scan: if "count" stays 0 here, the request itself is
+      // the problem (bad params/filter); if it shows the right count but
+      // the screen still looks empty, the bug is in rendering/state instead.
+      console.log("[session-log] refreshServer", { params, count: events.length });
       setServerEvents(events);
       const map: Record<string, string> = {};
       (staff as StaffLite[]).forEach((s) => (map[s.id] = s.name));
       setStaffMap(map);
-    } catch {
+    } catch (err) {
+      console.log("[session-log] refreshServer failed", err);
       setServerError("Showing queued scans only - couldn't reach the server for today's full log.");
     }
   }, [config, token]);
 
+  // Belt-and-suspenders: refetch both on a queue change (covers a
+  // background sync completing while this tab happens to already be the
+  // focused one) AND every time this tab gains focus (covers the much more
+  // common case - scan on the Scan tab, switch to Session log - without
+  // depending on the queue's pub/sub timing at all). Either one alone was
+  // leaving a gap; together there's no path back to this screen that skips
+  // a refetch.
   useEffect(() => {
     refreshQueued();
-    return subscribeToQueueChanges(refreshQueued);
-  }, [refreshQueued]);
-
-  useEffect(() => {
     refreshServer();
-  }, [refreshServer]);
+    return subscribeToQueueChanges(() => {
+      refreshQueued();
+      refreshServer();
+    });
+  }, [refreshQueued, refreshServer]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshQueued();
+      refreshServer();
+    }, [refreshQueued, refreshServer])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);

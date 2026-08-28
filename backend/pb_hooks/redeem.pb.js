@@ -1,8 +1,13 @@
 /// <reference path="../pb_data/types.d.ts" />
 
 // POST /api/redeem
-// body: { qr_code, counter_id, device_scan_time? }
+// body: { qr_code, counter_id, idempotency_key, device_scan_time? }
 // auth: staff-scoped token (see /api/staff-login in auth.pb.js)
+//
+// idempotency_key: client-generated, one per scan attempt, resent verbatim
+// on every retry of that same attempt. Backed by the redeem_attempts
+// collection (1740000200_redeem_idempotency.js) - see the note inside the
+// transaction below for what this closes.
 //
 // This is the one endpoint the counter app actually calls on every scan.
 // It has to be atomic: two devices hitting this at once for the same QR
@@ -30,11 +35,15 @@ routerAdd("POST", "/api/redeem", (e) => {
     qr_code: "",
     counter_id: "",
     device_scan_time: "",
+    idempotency_key: "",
   });
   e.bindBody(data);
 
-  if (!data.qr_code || !data.counter_id) {
-    throw new BadRequestError("qr_code and counter_id are required");
+  if (!data.qr_code || !data.counter_id || !data.idempotency_key) {
+    throw new BadRequestError("qr_code, counter_id and idempotency_key are required");
+  }
+  if (data.idempotency_key.length > 100) {
+    throw new BadRequestError("idempotency_key is too long");
   }
 
   const staffId = e.auth.id;
@@ -45,6 +54,34 @@ routerAdd("POST", "/api/redeem", (e) => {
   let result;
 
   $app.runInTransaction((txApp) => {
+    // True idempotency (closes the gap flagged in the README): the client
+    // generates this key once per scan attempt and resends the *same* key
+    // on every retry of that attempt (see queue.ts). If a request tagged
+    // with this key already committed, this is a retry whose response
+    // never reached the phone - replay the cached result byte-for-byte and
+    // touch nothing else, rather than re-deriving an answer from current
+    // ticket state (which may have moved on since - e.g. an undo in
+    // between). Checked inside the same transaction as everything else
+    // below so it benefits from the same single-writer serialization
+    // already relied on elsewhere in this file: no other request touching
+    // this key can be mid-flight concurrently.
+    let cached = null;
+    try {
+      const attempt = txApp.findFirstRecordByFilter(
+        "redeem_attempts",
+        "idempotency_key = {:key}",
+        { key: data.idempotency_key }
+      );
+      cached = JSON.parse(attempt.get("result_json"));
+    } catch (err) {
+      // No attempt recorded under this key yet - first time we're seeing it.
+    }
+
+    if (cached) {
+      result = cached;
+      return;
+    }
+
       let ticket;
   try {
     ticket = txApp.findFirstRecordByFilter(
@@ -131,6 +168,15 @@ routerAdd("POST", "/api/redeem", (e) => {
         original_scanned_at: ticket.get("scanned_at"),
       };
     }
+
+    // Record what we're handing back, keyed to this attempt, so a
+    // lost-response retry (same key) replays this exact result above
+    // instead of falling into the branch logic again.
+    const attemptsCollection = txApp.findCollectionByNameOrId("redeem_attempts");
+    const attemptRecord = new Record(attemptsCollection);
+    attemptRecord.set("idempotency_key", data.idempotency_key);
+    attemptRecord.set("result_json", JSON.stringify(result));
+    txApp.save(attemptRecord);
   });
 
   return e.json(200, result);

@@ -141,24 +141,31 @@ spell out but that fell out of actually building it:
   is exactly what this app is designed to keep working without. So
   "Connected" here means an actual `GET /api/health` against the
   configured local server succeeded, not that the device has 4G.
+- **Session log refetches on tab focus, not just on a queue change.**
+  First cut only fetched `/api/session-log` once, on mount - since Expo
+  Router's tabs stay mounted in the background after the first visit,
+  nothing else ever re-triggered it, so the screen kept showing whatever
+  was true the moment you first opened that tab. First fix made it
+  refetch whenever the local queue's status changed (a scan finishing
+  sync). That's correct, but it puts all the weight on one pub/sub path
+  through a module-level listener `Set` in `queue.ts` - fine once it's
+  actually running, but it's exactly the kind of singleton state that can
+  silently survive a stale bundle or a half-applied Fast Refresh, and a
+  broken version of it looks identical to "never fixed at all." Session
+  log now also refetches on `useFocusEffect` (`@react-navigation/native`,
+  already pulled in transitively via `expo-router`) - switching to that
+  tab always re-fetches, independent of queue timing entirely. Kept both:
+  focus covers the normal "scan, then switch tabs to check" path; the
+  queue listener still catches a background sync finishing while you're
+  already sitting on the Session log tab.
 
-### The one gap I didn't close: true idempotency
+### Closing the idempotency gap
 
-If a device's connection drops in the exact instant after `/api/redeem`
-commits server-side but before the response reaches the phone, the client
-will retry and get back "already redeemed." The app has a heuristic for
-this (`queue.ts`, `resolveSynced`): if the "already redeemed" response's
-staff and counter match the exact item being retried, it treats that as
-"that was actually my own successful attempt" rather than a real
-conflict. That covers the common case cleanly, but it's still a guess -
-it can't distinguish "I actually did this" from "someone with my staff ID
-happened to redeem the same ticket at the same counter in the same
-instant," which is astronomically unlikely but not impossible. A properly
-closed version of this needs an idempotency key on `/api/redeem` (client
-generates a UUID per scan attempt, server remembers it briefly, replays
-the cached result instead of re-processing) - didn't want to reopen the
-already-reviewed redeem transaction for this step without flagging it
-first.
+The heuristic described above is gone. /api/redeem now requires an idempotency_key in the body - one generated per scan attempt in queue.ts, stored alongside that row, and resent verbatim on every retry of that same row. Inside the request's transaction, the key is checked against a new redeem_attempts collection (1740000200_redeem_idempotency.js) before touching ticket state at all: a match means this is a lost-response retry, and the cached response is replayed byte-for-byte with nothing re-derived; no match means this is the first time the key's been seen, so it runs the normal valid/already-redeemed branch and then records the result under that key before returning. cleanup.pb.js prunes redeem_attempts rows older than 48h on an hourly cron - this collection is transport bookkeeping, not part of the permanent audit trail ticket_events is.
+
+This isn't just a stricter version of the old heuristic - it fixes a real misclassification the heuristic had. A genuine second scan of an already-redeemed ticket by the same staff at the same counter (an honest double-tap, not a dropped connection) used to get treated as "that was actually my earlier success," because the heuristic had no way to tell the two apart. Keying on a fresh UUID per attempt instead of on staff+counter means a real duplicate (new row, new key) now correctly comes back as a conflict, and only an actual retry of the same row replays as valid.
+
+One edge worth knowing about, not a bug: if a scan's response gets cached, the ticket is then undone via /api/undo-scan, and only after that the original request finally retries (possible if a phone stayed offline long enough for staff to undo from a different device first), the retry replays the original "valid" result from before the undo - not the ticket's current state. That's correct idempotency behavior, not a glitch: the cached response is a record of what that request produced when it first ran, not a live lookup. It just means the replayed screen and the ticket's actual current status can briefly disagree if you check both at once.
 
 ### What's stubbed or deliberately left out
 

@@ -119,7 +119,7 @@ export function staffLogin(serverUrl: string, username: string, pin: string): Pr
 export function redeemTicket(
   serverUrl: string,
   token: string,
-  body: { qr_code: string; counter_id: string; device_scan_time?: string }
+  body: { qr_code: string; counter_id: string; idempotency_key: string; device_scan_time?: string }
 ): Promise<RedeemResult> {
   return request<RedeemResult>(serverUrl, "/api/redeem", { method: "POST", body, token });
 }

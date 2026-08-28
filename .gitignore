@@ -34,3 +34,6 @@ Thumbs.db
 # Local backend data
 backend/pb_data/data/
 backend/pb_data/storage/
+
+# Misc
+*.bat

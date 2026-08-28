@@ -1,6 +1,7 @@
 import { getDb, initDb, PendingScanRow } from "./db";
 import { redeemTicket, RedeemResult, NetworkError, ApiError } from "./api";
 import { getStaffToken } from "./authTokenCache";
+import { generateUuid } from "./uuid";
 
 // ---- tiny pub/sub so screens can react to queue changes without polling --
 type Listener = () => void;
@@ -30,10 +31,16 @@ export async function enqueueScan(input: {
   await ensureReady();
   const db = getDb();
   const now = new Date().toISOString();
+  // One key per scan attempt (this call), not per sync try - every retry
+  // of this same row over the network resends this exact key, which is
+  // what lets the server tell "lost-response retry" apart from a genuine
+  // second scan of the same ticket. See resolveSynced below and
+  // redeem.pb.js.
+  const idempotencyKey = generateUuid();
   const result = await db.runAsync(
-    `INSERT INTO pending_scans (qr_code, counter_id, staff_id, device_scan_time, status, created_at)
-     VALUES (?, ?, ?, ?, 'pending', ?)`,
-    [input.qr_code, input.counter_id, input.staff_id, input.device_scan_time, now]
+    `INSERT INTO pending_scans (qr_code, counter_id, staff_id, device_scan_time, idempotency_key, status, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+    [input.qr_code, input.counter_id, input.staff_id, input.device_scan_time, idempotencyKey, now]
   );
   notify();
   return result.lastInsertRowId;
@@ -106,6 +113,7 @@ export async function syncPendingItems(serverUrl: string): Promise<void> {
         const result = await redeemTicket(serverUrl, token, {
           qr_code: item.qr_code,
           counter_id: item.counter_id,
+          idempotency_key: item.idempotency_key,
           device_scan_time: item.device_scan_time,
         });
         await resolveSynced(item, result);
@@ -134,25 +142,17 @@ async function resolveSynced(item: PendingScanRow, result: RedeemResult): Promis
   const db = getDb();
   const now = new Date().toISOString();
 
-  // Heuristic for "this 'already redeemed' response is actually MY earlier
-  // attempt whose response got lost, not a real conflict": same staff,
-  // same counter as this exact queued item. See queue.ts module notes in
-  // the README for the residual gap this doesn't cover (a true
-  // idempotency key on /api/redeem would close it properly).
-  let effectiveStatus = result.status;
-  if (
-    result.status !== "valid" &&
-    result.original_staff_id === item.staff_id &&
-    result.original_counter_id === item.counter_id
-  ) {
-    effectiveStatus = "valid";
-  }
-
+  // No more staff+counter guessing here: the server keys its idempotency
+  // cache on item.idempotency_key (see redeem.pb.js), so a lost-response
+  // retry of this exact row comes back with the original "valid" result
+  // verbatim - not "already redeemed" - and a real duplicate scan (a fresh
+  // row, fresh key) correctly comes back as a conflict instead of being
+  // mistaken for a successful retry. result.status is trustworthy as-is.
   await db.runAsync(
     `UPDATE pending_scans
      SET status = 'synced', result_status = ?, result_json = ?, synced_at = ?
      WHERE id = ?`,
-    [effectiveStatus, JSON.stringify(result), now, item.id]
+    [result.status, JSON.stringify(result), now, item.id]
   );
   notify();
 }
