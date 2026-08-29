@@ -39,11 +39,6 @@ export default function SessionLog() {
         fetchSessionLog(config.serverUrl, token, params),
         fetchStaffNames(config.serverUrl),
       ]);
-      // TEMP DEBUG - remove once confirmed fixed. Check the Metro/terminal
-      // logs after a scan: if "count" stays 0 here, the request itself is
-      // the problem (bad params/filter); if it shows the right count but
-      // the screen still looks empty, the bug is in rendering/state instead.
-      console.log("[session-log] refreshServer", { params, count: events.length });
       setServerEvents(events);
       const map: Record<string, string> = {};
       (staff as StaffLite[]).forEach((s) => (map[s.id] = s.name));

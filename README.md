@@ -158,6 +158,31 @@ spell out but that fell out of actually building it:
   focus covers the normal "scan, then switch tabs to check" path; the
   queue listener still catches a background sync finishing while you're
   already sitting on the Session log tab.
+- **Session log returning zero events despite real data existing - found
+  post-deploy, fixed in `session_log.pb.js`.** The refetch-timing work
+  above was all correct; the screen still came back empty because
+  `/api/session-log`'s own filter was silently unmatchable. The device
+  sends `from`/`to` via `Date.toISOString()` - standard ISO 8601,
+  `"...T...Z"`. PocketBase's `autodate`/`date` fields (e.g. `server_time`
+  on `ticket_events`) are stored as `"... ...Z"` - a space where
+  `toISOString()` puts a `T`. `findRecordsByFilter`'s `>=`/`<=` on a date
+  field compares these as plain text, not as parsed timestamps, and a
+  space (`0x20`) sorts before `T` (`0x54`) - so on any same-day query,
+  every real row looks "earlier than" the lower bound no matter its
+  actual time, and the range matches nothing. Confirmed by reproducing
+  the exact filter with literal values in the PocketBase admin UI (same
+  0-row result), which ruled out anything specific to how the hook binds
+  params and pointed straight at the comparison itself. Fixed by
+  normalizing `from`/`to` (`.replace("T", " ")`) before they go into the
+  filter, so they match PocketBase's own storage format. **The same
+  mismatch was also lurking in `cleanup.pb.js`**'s hourly prune job - its
+  `cutoff` is built the same `toISOString()` way and compared against
+  `created` in a raw SQL string - meaning same-day `redeem_attempts` rows
+  could read as older than the 48h cutoff and get pruned early. Fixed
+  there too, same way. Worth remembering for *any* future date-field
+  filter or raw SQL comparison added against PocketBase data: normalize
+  to the space-separated form first, or use PocketBase's own date literal
+  handling rather than a bare `toISOString()` string.
 
 ### Closing the idempotency gap
 

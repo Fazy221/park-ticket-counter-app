@@ -14,7 +14,18 @@
 const RETENTION_HOURS = 48;
 
 cronAdd("prune_redeem_attempts", "0 * * * *", () => {
-  const cutoff = new Date(Date.now() - RETENTION_HOURS * 60 * 60 * 1000).toISOString();
+  // toISOString() gives "...T...Z"; PocketBase's stored "created" values
+  // use "... ...Z" (space instead of "T"). This is a raw SQL string
+  // comparison, so the mismatch matters the same way it did in
+  // session_log.pb.js: a "T"-formatted cutoff sorts *after* any
+  // same-day "created" value regardless of actual time-of-day, which
+  // means rows from earlier today were being treated as always older
+  // than the cutoff - i.e. eligible for deletion well before the 48h
+  // retention window actually elapsed. Normalizing to match storage
+  // format fixes the comparison.
+  const cutoff = new Date(Date.now() - RETENTION_HOURS * 60 * 60 * 1000)
+    .toISOString()
+    .replace("T", " ");
   const result = $app
     .db()
     .newQuery("DELETE FROM redeem_attempts WHERE created < {:cutoff}")
