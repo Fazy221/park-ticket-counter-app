@@ -1,0 +1,13 @@
+{
+  "name": "GateMark Superadmin",
+  "short_name": "GateMark",
+  "description": "GateMark superadmin dashboard",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#1F4D3A",
+  "icons": [
+    { "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

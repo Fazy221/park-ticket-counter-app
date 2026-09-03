@@ -115,13 +115,30 @@ export async function syncPendingItems(serverUrl: string): Promise<void> {
           counter_id: item.counter_id,
           idempotency_key: item.idempotency_key,
           device_scan_time: item.device_scan_time,
+          // Tells the server this attempt sat in a real offline-pending
+          // state (staff saw "Pending sync", not an instant result) at
+          // some point before this attempt - see the was_offline_pending
+          // update just below for how that gets set. Lets redeem.pb.js
+          // tell a genuine race (conflict_flagged) apart from an ordinary
+          // live duplicate scan (duplicate_attempt).
+          was_queued_offline: !!item.was_offline_pending,
         });
         await resolveSynced(item, result);
       } catch (err) {
         if (err instanceof NetworkError) {
           // Connection dropped again mid-drain - put this item back to
           // 'pending' and stop; the next tick or reconnect picks up here.
-          await db.runAsync(`UPDATE pending_scans SET status = 'pending' WHERE id = ?`, [item.id]);
+          // This is a *real* offline failure (not a lost-response retry -
+          // those come back as ApiError/success, never NetworkError), so
+          // this is exactly the "device was showing Pending sync" moment
+          // the README's conflict definition is about. Flag it permanently
+          // (never cleared) so that whenever this row does eventually
+          // resolve - possibly several ticks from now - the server knows
+          // to check it against a conflict, not just a plain duplicate.
+          await db.runAsync(
+            `UPDATE pending_scans SET status = 'pending', was_offline_pending = 1 WHERE id = ?`,
+            [item.id]
+          );
           notify();
           return;
         }

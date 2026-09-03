@@ -1,12 +1,117 @@
-# GateMark - mobile scan flow
+# GateMark
 
-This step adds two things on top of the schema + redeem transaction from
-the previous step:
+Offline-first ticket scanning system for a single venue, running entirely
+on the local network. Development happens as **one feature per fresh
+Claude session**, not one long-running chat, so this file is the running
+source of truth for where the project actually is. **Read this whole
+section before starting new work** - don't jump straight to the
+subsection that sounds like your task.
 
-1. **Staff PIN login on the backend** - the thing `redeem.pb.js` explicitly
-   left as a TODO last time.
-2. **The Expo counter app** - PIN login, camera scanning, offline queue,
-   undo, session log.
+## Origin & architecture (read this first)
+
+Built from a project plan (not in this repo - ask the user for it if
+something below doesn't make sense) whose core decisions are still in
+force:
+
+- **Offline-first, LAN-only, no cloud dependency.** Wi-Fi and grid power
+  can't be relied on. PocketBase (single Go binary + embedded SQLite)
+  runs on-site - by default on the venue's own laptop, not dedicated
+  hardware - and every device talks to it over the LAN. Nothing about
+  normal operation requires internet.
+- **One `staff` auth collection for everyone**, distinguished by `role`
+  (`counter_staff` | `superadmin`) - not two separate account systems. A
+  future web superadmin logs in exactly the way counter staff do, just
+  gated by role.
+- **The web superadmin is a static Vite + React + Tailwind build, served
+  directly out of PocketBase's `pb_public/`, installed as a PWA on the
+  laptop.** No separate web server, no internet-reachable host. Talks to
+  PocketBase directly via the JS SDK (not a custom route per screen the
+  way mobile does) for anything that's plain CRUD or a live view; custom
+  `/api/*` routes still exist for anything needing a transaction or a
+  guaranteed audit-trail write (see "The web superadmin (`web/`)" below).
+- **A "conflict" is a specific, narrower thing than "any duplicate
+  scan."** A `duplicate_attempt` is an ordinary live rejection - staff
+  scan an already-used ticket, see "already redeemed" instantly, nothing
+  ambiguous happened. A `conflict` is what happens when a device that
+  was showing "Pending sync" (queued while offline) reconnects and
+  discovers it *lost* a race against another device's earlier sync -
+  staff may have already let that customer through on a false-positive
+  local read. These need separate handling, and now get it (see below) -
+  the mobile queue flags a row `was_offline_pending` the first time a
+  sync attempt for it hits a genuine `NetworkError`, and passes that
+  through to `/api/redeem` as `was_queued_offline` so a losing sync logs
+  `conflict_flagged` instead of a plain `duplicate_attempt`.
+
+## What's actually built vs. the plan
+
+- ✅ **Schema** (`pb_migrations/`) matches the plan's data model exactly,
+  including values nothing used at first: `tickets.status` has `void`;
+  `ticket_events.event_type` has all six values (`scanned`,
+  `duplicate_attempt`, `voided`, `reopened`, `conflict_flagged`,
+  `conflict_resolved`); `staff.role` includes `superadmin`; a `note`
+  field (500 char) for required override/conflict reasons. A later
+  migration (`1740000300_superadmin_web_access.js`) opens
+  `listRule`/`viewRule` on `tickets`/`ticket_events` and CRUD (no delete)
+  on `staff`/`counters` to `@request.auth.role = "superadmin"` - the only
+  schema-adjacent change the web superadmin needed; every write to
+  tickets/ticket_events is still custom-hook-only.
+- ✅ **Mobile counter app**: PIN login, camera scan + manual entry,
+  offline queue (SQLite, per-staff token cache), inline undo (2-min,
+  self-service), session log. See "One interpretation call worth
+  flagging" below for why undo is inline rather than a separate screen.
+- ✅ **Backend**: staff auth, `/api/redeem` (atomic, idempotent,
+  conflict-vs-duplicate classification), `/api/undo-scan`,
+  `/api/session-log`, public staff-names/counters lookups, hourly cleanup
+  cron, `/api/ticket-override` (superadmin void/reopen with required
+  reason), `/api/conflict-resolve` (superadmin marks a conflict
+  reviewed).
+- ✅ **Conflict-detection logic** - closed the gap described above.
+  Verified against a real running PocketBase instance, not just read
+  through: seeded a genuine two-device race (one live duplicate, one
+  flagged `was_queued_offline`) and confirmed `duplicate_attempt` vs.
+  `conflict_flagged` land correctly in `ticket_events`.
+- ✅ **Web superadmin** (`web/`) - plan section 6, all of it: live
+  dashboard (realtime per-counter counts + activity feed), Tickets
+  (search, override status with required reason), Conflicts queue
+  (derived from the event log, not a stored flag - see the web section
+  below), Staff & Counters CRUD (deactivate via `active`, no hard delete
+  exposed). See "The web superadmin (`web/`)" below for the real gotchas
+  hit building it.
+- ❌ **Reports/export** - not built. Plan section 5.
+- ❌ **Design system pass across both apps** - not a *pass* exactly, but
+  the web app reused the mobile app's exact color tokens
+  (`gatemark.primary` etc. in `web/tailwind.config.js` mirror
+  `mobile/src/theme/colors.ts`) rather than picking its own, so the two
+  don't visually diverge in the meantime. A real unified pass
+  (typography, spacing scale, icon usage) across both is still open -
+  this is plan item 6 below.
+
+## What's next (plan's build order, annotated with real status)
+
+1. ~~Schema + atomic redeem + audit log~~ - done.
+2. ~~Mobile scan flow + offline queue + manual entry~~ - done, verified
+   with a physical device-disconnect test.
+3. ~~Conflict-flagging path end-to-end~~ - done, verified against a real
+   running instance (see above).
+4. ~~Web superadmin~~ - done: auth, staff/counter CRUD, live dashboard,
+   ticket override, Conflicts queue. Verified end-to-end in a headless
+   browser against a real PocketBase instance, including the actual
+   void/reopen and conflict-resolve flows through the UI, not just the
+   API. See "The web superadmin (`web/`)" below for real bugs hit and
+   fixed during that verification - worth reading before extending this
+   app, since a couple are non-obvious PocketBase/SDK gotchas that'll
+   bite again on any new screen that queries the same collection twice.
+5. **Reports + CSV/PDF export - not started.**
+6. **Design system pass across both apps - not started** as a real pass
+   (colors are already shared - see above).
+7. **On-site real-conditions test (router on battery, power cut
+   mid-shift, concurrent scans across counters) - not done.**
+
+If you're picking this up in a fresh session for one specific feature:
+the section above is enough to orient you. Only read further into the
+backend/mobile/web sections below if they're directly relevant to what
+you're building - you don't need this file's full history for one
+focused change.
 
 ## Backend additions (`backend/`)
 
@@ -292,8 +397,113 @@ reinstalled after a future SDK bump.
   mid-session and confirm the queue/undo/session-log behavior end to end,
   same as step 10.3 in the plan.
 
+## The web superadmin (`web/`)
+
+Vite + React + TypeScript + Tailwind, built as a static site and served
+by PocketBase's `pb_public/` (copy `web/dist/*` there after `npm run
+build` - there's no separate deploy step or web server). Talks to
+PocketBase two ways: the `pocketbase` JS SDK directly for anything that's
+plain CRUD or a live view (tickets/events list+search, staff/counters
+CRUD, realtime dashboard), and the same custom `/api/*` route pattern
+mobile uses for anything needing a transaction or a guaranteed
+audit-trail write (`/api/ticket-override`, `/api/conflict-resolve`,
+reuses `/api/staff-login`). **Not shadcn/ui** despite the plan's original
+wording - the shadcn CLI's registry wasn't reachable from the build
+environment this was produced in, so `src/components/ui/` is a small
+hand-rolled set of primitives (Button, Card, Dialog, Input, Badge, etc.)
+in the same visual style rather than Radix-backed shadcn components. They
+cover everything this app needed; swap in real shadcn/ui later if a
+future screen needs something these don't do (a real focus trap in
+`Dialog`, for instance - it's Escape/backdrop/click-outside only right
+now).
+
+Verified end-to-end against a real, running PocketBase instance and a
+real headless Chromium session (Playwright), not just read through -
+login, dashboard, ticket search, void, reopen, resolve a conflict, and
+create a staff member and a counter, all through the actual UI, checked
+for zero browser console errors on the final pass. That process caught
+several bugs worth knowing about before extending this app:
+
+- **`tickets`, `counters`, and `staff` have no `created`/`updated`
+  fields.** They were defined via migration with an explicit `fields:
+  [...]` list that never included them - unlike collections made through
+  the PocketBase dashboard, which get them by default. Confirmed by
+  inspecting the live schema, not assumed. Sorting by `-created` on any
+  of these returns a 400. `ticket_events.server_time` is the one
+  timestamp field that exists across these collections; `tickets` has no
+  creation-order field at all (Tickets.tsx sorts by `-scanned_at`
+  instead, which is a reasonable proxy but not a true creation order).
+- **PocketBase's default request auto-cancellation key is `method +
+  path` only - it ignores query params/filters.** Confirmed by reading
+  the SDK source (`t.requestKey || (t.method||"GET") + e`). Two
+  *concurrent* calls to the same collection's `/records` endpoint cancel
+  each other even with completely different filters. This silently broke
+  two things here: the Conflicts queue's paired `conflict_flagged` /
+  `conflict_resolved` queries (`useOpenConflicts`), and the dashboard's
+  three-way ticket status count (`useTicketStatusCounts`) - both fire
+  same-collection requests in the same tick. Fixed with an explicit,
+  distinct `requestKey` per logical query (see `lib/pbErrors.ts` and
+  `useLiveList`'s `requestKey` construction). **Any new screen that fires
+  more than one concurrent query against the same collection needs to do
+  the same**, or it'll intermittently lose one of the two at random.
+- **PocketBase serializes an unset number field as `0`, not `null`.**
+  `assigned_number ?? "—"` doesn't catch it, so unscanned/reopened
+  tickets showed "#0" instead of "—". Fixed with `assignedNumberLabel()`
+  in `lib/format.ts` (a plain truthy check, since assigned numbers start
+  at 1 and 0 always means "not assigned yet") - use that helper anywhere
+  a ticket number is displayed, not `??`.
+- **`pkill -f "pocketbase serve"` will kill its own invoking shell** if
+  run as part of a larger script, because `-f` matches the full command
+  line and the pattern text is itself part of that command line. Hit
+  this repeatedly while resetting the test database during verification
+  - the symptom is the whole multi-line command silently dying partway
+  through with empty output. Kill by PID (`ps`/`grep` for the actual
+  process, or track the PID from when you started it) instead of by
+  pattern when a real PocketBase server might be running.
+
+Structure: `src/lib/` (PocketBase client, shared types, date/format
+helpers, the custom-route wrapper), `src/hooks/` (`useLiveList` -
+realtime-backed list fetch, `useOpenConflicts`, `useTicketStatusCounts`),
+`src/components/` (layout, shared dialogs, `ui/` primitives),
+`src/pages/` (one per nav item). Design tokens
+(`gatemark.primary`/`accent`/etc. in `tailwind.config.js`) are copied
+from `mobile/src/theme/colors.ts` verbatim rather than picked separately,
+so the two apps don't visually diverge - see "Design system pass" above
+for why that's not the same thing as a real unified pass.
+
+**Interpretation calls worth flagging**, same spirit as the mobile
+section above:
+
+- **Staff/counter "delete" is deactivate-only** (`active` toggle via the
+  Records API), no hard-delete route exposed to the web app. Hard-deleting
+  a `staff` or `counters` row that's already referenced by
+  `tickets`/`ticket_events` would leave those relations dangling and
+  quietly break the audit trail's "who/where" columns; deactivating keeps
+  history intact. A true delete is still possible for the rare "created
+  by mistake, has no history" case, just from the PocketBase dashboard
+  directly rather than the superadmin UI.
+- **"Reopen" always fully resets a ticket's redemption metadata**
+  (`assigned_number`/`counter_id`/`staff_id`/`scanned_at` all cleared),
+  same as mobile's self-serve undo, so a reopened ticket gets a genuinely
+  fresh redemption if scanned again rather than reusing stale data.
+  **"Void" deliberately does not** - it only flips `status`, leaving any
+  existing redemption metadata in place, since voiding is meant to
+  annotate history (fraud, refund) rather than erase it.
+- **Conflicts queue "open" state isn't a stored flag** - it's derived by
+  comparing the latest `conflict_flagged` event per ticket against the
+  latest `conflict_resolved` event for that same ticket
+  (`useOpenConflicts`). This was a deliberate choice to keep the schema
+  as-is (no new boolean field, no migration) at the cost of the app
+  doing that comparison client-side instead of a single server-side
+  filter - fine at this app's scale, worth revisiting if the venue ever
+  has enough concurrent conflicts for that to matter.
+
 ## Suggested next step
 
-Plan section 10, step 4: the web superadmin - auth, staff/counter CRUD,
-live dashboard, ticket override, and the Conflicts queue this whole
-staff-token design has been building toward.
+See "What's next" near the top of this file for the full annotated build
+order. Items 1-4 (schema, mobile, conflict-detection, web superadmin) are
+done and verified; item 5 (Reports + CSV/PDF export) is the next
+unstarted piece of the original plan. If picking that up, "The web
+superadmin (`web/`)" section above - especially the requestKey/
+auto-cancellation gotcha - is worth reading first, since a Reports screen
+will likely add more concurrent same-collection queries.

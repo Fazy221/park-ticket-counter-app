@@ -89,6 +89,13 @@ export type RedeemResult =
       original_staff_id: string | null;
       original_counter_id: string | null;
       original_scanned_at: string | null;
+      // True when this duplicate was logged as ticket_events.conflict_flagged
+      // rather than duplicate_attempt - i.e. this device's own queued scan
+      // lost a race against an earlier sync, not a live rejection. Not
+      // currently branched on anywhere in the mobile UI (that's the web
+      // superadmin's Conflicts queue); carried through mainly so it's
+      // visible in result_json for debugging without a server round trip.
+      conflict?: boolean;
     };
 
 export type SessionLogEntry = {
@@ -119,7 +126,13 @@ export function staffLogin(serverUrl: string, username: string, pin: string): Pr
 export function redeemTicket(
   serverUrl: string,
   token: string,
-  body: { qr_code: string; counter_id: string; idempotency_key: string; device_scan_time?: string }
+  body: {
+    qr_code: string;
+    counter_id: string;
+    idempotency_key: string;
+    device_scan_time?: string;
+    was_queued_offline?: boolean;
+  }
 ): Promise<RedeemResult> {
   return request<RedeemResult>(serverUrl, "/api/redeem", { method: "POST", body, token });
 }

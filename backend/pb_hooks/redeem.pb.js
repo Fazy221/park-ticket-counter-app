@@ -1,8 +1,14 @@
 /// <reference path="../pb_data/types.d.ts" />
 
 // POST /api/redeem
-// body: { qr_code, counter_id, idempotency_key, device_scan_time? }
+// body: { qr_code, counter_id, idempotency_key, device_scan_time?, was_queued_offline? }
 // auth: staff-scoped token (see /api/staff-login in auth.pb.js)
+//
+// was_queued_offline: set by the mobile queue (see queue.ts) when this scan
+// attempt was, at some point before this request, genuinely stuck in a
+// "Pending sync" state because the device couldn't reach the server - not
+// just idempotency-retry churn. Used below to tell a conflict apart from an
+// ordinary live duplicate; see the note on the duplicate branch.
 //
 // idempotency_key: client-generated, one per scan attempt, resent verbatim
 // on every retry of that same attempt. Backed by the redeem_attempts
@@ -36,6 +42,7 @@ routerAdd("POST", "/api/redeem", (e) => {
     counter_id: "",
     device_scan_time: "",
     idempotency_key: "",
+    was_queued_offline: false,
   });
   e.bindBody(data);
 
@@ -150,12 +157,32 @@ routerAdd("POST", "/api/redeem", (e) => {
       };
     } else {
       // Already redeemed (or void) - log the attempt, never touch the ticket.
+      //
+      // Conflict vs. ordinary duplicate: an ordinary duplicate_attempt is a
+      // live rejection - staff scan an already-used ticket and see "already
+      // redeemed" right there, nothing ambiguous happened. A conflict is
+      // narrower: this specific attempt was, at some point before now,
+      // genuinely stuck offline showing "Pending sync" (was_queued_offline),
+      // meaning staff may have already waved the customer through on a
+      // false-positive local read before the device ever found out this
+      // ticket had already been redeemed elsewhere. That's a real
+      // discrepancy worth a human looking at, not just a rejected scan - so
+      // it gets its own event_type instead of being lumped in with the
+      // ordinary case.
+      const isConflict = !!data.was_queued_offline;
       const event = new Record(eventsCollection);
       event.set("ticket_id", ticket.id);
-      event.set("event_type", "duplicate_attempt");
+      event.set("event_type", isConflict ? "conflict_flagged" : "duplicate_attempt");
       event.set("actor_staff_id", staffId);
       event.set("counter_id", data.counter_id);
       if (data.device_scan_time) event.set("device_scan_time", data.device_scan_time);
+      if (isConflict) {
+        event.set(
+          "note",
+          "Device queued this scan while offline and lost the race against an earlier " +
+            `redemption (ticket already ${ticket.get("status")} as of this check).`
+        );
+      }
       txApp.save(event);
 
       // "who/when/where it was already redeemed" for the app to show.
@@ -166,6 +193,7 @@ routerAdd("POST", "/api/redeem", (e) => {
         original_staff_id: ticket.get("staff_id"),
         original_counter_id: ticket.get("counter_id"),
         original_scanned_at: ticket.get("scanned_at"),
+        conflict: isConflict,
       };
     }
 
