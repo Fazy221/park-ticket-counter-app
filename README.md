@@ -98,7 +98,10 @@ gatemark/
 `web/dist/` (build output), `backend/pb_data/` (runtime DB + auto-generated
 `types.d.ts`), `backend/pb_data.zip` (backup), `*.db*`, `package-lock.json`
 (both apps), `*.tsbuildinfo`, `backend/pb_public/*`, `backend/LICENSE.md` +
-`CHANGELOG.md` (PocketBase's own bundled files, not project docs), and
+`CHANGELOG.md` (PocketBase's own bundled files, not project docs),
+`backend/nssm.exe` (third-party service-wrapper binary, same deal as
+`pocketbase.exe`), `backend/pocketbase-service.log` (runtime output, not
+project docs - same spirit as excluding `pb_data/`), and
 `mobile/assets/*.png` (binary icons). All of it is either generated,
 third-party, or a lockfile - none of it is needed to understand or edit the
 codebase, and cutting it keeps the zip to roughly a tenth of its raw size.
@@ -114,7 +117,9 @@ to do anything beyond render an empty screen.
 **Prerequisites:** Node.js LTS + npm on PATH, and `pocketbase.exe` already
 sitting in `backend/` (it's excluded from git/the AI zip - see above - so
 confirm it's actually there; if not, grab the matching version from
-PocketBase's releases page).
+PocketBase's releases page). For the on-site deployment step in "Auto-restart
+on boot & crash" below, `nssm.exe` (from <https://nssm.cc/download>) needs to
+be in `backend/` too, same "excluded from the zip, grab it separately" deal.
 
 **Terminal 1 - backend:**
 
@@ -257,7 +262,7 @@ npx expo start
 7. **On-site real-conditions test (router on battery, power cut
    mid-shift, concurrent scans across counters) - not done.**
 
-## Deployment hardening - action plan (items 1-2 done, 3-7 not started)
+## Deployment hardening - action plan (items 1-3 done, 4-7 not started)
 
 Surfaced while working through how this actually gets installed on a
 real venue laptop by someone other than whoever built it, with no
@@ -300,16 +305,23 @@ POS still today) eventually grew for the same reason.
    half is fully automatic; the offsite half still needs a one-time
    on-site decision** - someone has to pick and configure an actual
    `-Destination` (USB drive, network share, synced cloud folder) for
-   this specific venue and wire it into a Scheduled Task, the same shape
-   as item 3's still-open restart-on-boot task below.
-3. **Nothing restarts PocketBase if it stops.** The launch mechanism
-   discussed so far is a `.bat` file someone double-clicks. If the
-   laptop reboots for any reason (Windows Update, power cut, someone
-   bumping the plug), the whole system is down until a human notices
-   and manually restarts it. Needs a Windows Scheduled Task set to
-   "run at startup," or a small service wrapper (e.g. NSSM), with a
-   restart-on-crash policy - not a file that depends on someone
-   remembering to click it.
+   this specific venue and wire it into a Scheduled Task, the same
+   "code's ready, still needs a human to run it once on-site" shape as
+   item 3's service install below.
+3. ~~**Nothing restarts PocketBase if it stops.**~~ **Done** - see
+   "Auto-restart on boot & crash" under the backend section below for
+   the actual mechanism. Short version: the launch mechanism discussed
+   so far was a `.bat` file someone double-clicks, so a reboot (Windows
+   Update, power cut, someone bumping the plug) or a mid-shift crash
+   left the whole system down until a human noticed and manually
+   restarted it. `backend/install-service.ps1` now registers PocketBase
+   as a Windows service via NSSM, running as LocalSystem (starts at
+   boot with no one logged in) with a restart-on-exit policy (a crash
+   mid-shift gets relaunched on its own, no reboot needed). **This is a
+   one-time on-site step, same shape as item 2's offsite backup
+   destination** - someone still has to actually run the install script
+   once, as Administrator, after placing `nssm.exe` in `backend/`
+   alongside `pocketbase.exe`.
 4. **Counter devices are unrestricted, general-purpose Android
    phones.** No kiosk mode, no MDM, nothing stopping a staff member
    from swiping out of the app, changing the Wi-Fi network, or
@@ -459,7 +471,8 @@ needs a one-time on-site decision:
   `-Destination` actually is at this venue (which drive letter, which
   share, which synced folder), then wiring it into a Windows Scheduled
   Task so it runs unattended - the same "needs a human to set it up once,
-  then never again" shape as item 3's restart-on-boot task below:
+  then never again" shape as item 3's service install (see "Auto-restart
+  on boot & crash" below):
 
   ```powershell
   schtasks /Create /TN "GateMark Offsite Backup" /SC DAILY /ST 04:15 `
@@ -480,6 +493,66 @@ needs a one-time on-site decision:
   restore from any zip in `pb_data/backups/` directly; a zip that only
   exists at the offsite `-Destination` needs to be copied back into
   `pb_data/backups/` first before the dashboard will see it.
+
+### Auto-restart on boot & crash (deployment hardening item 3)
+
+Fixes "nothing restarts PocketBase if it stops" from the action plan
+above. `pocketbase.exe` is a plain console app with no idea how to talk
+to the Windows Service Control Manager, so it can't just be pointed at
+by `sc.exe create` - `backend/install-service.ps1` uses
+[NSSM](https://nssm.cc), a small wrapper .exe, to register it as a real
+Windows service instead.
+
+- **`install-service.ps1`** installs PocketBase as a service (default
+  name `GateMarkServer`) that:
+  - Starts automatically at boot, running as `LocalSystem` - no one
+    needs to be logged into the laptop for it to come up, unlike a
+    Scheduled Task set to "run whether user is logged on or not" (which
+    also needs a stored account password).
+  - Restarts itself if the process ever exits, with a 5-second delay so
+    a genuine crash loop doesn't just peg the CPU retrying every few
+    ms - covers a mid-shift crash, not just a reboot.
+  - Sets `AppDirectory` to `backend/` explicitly. This is the setting
+    that actually matters: it's the exact same "PocketBase only
+    auto-applies `pb_migrations/`/`pb_hooks/` next to its own working
+    directory" gotcha called out in "Running it locally" above - get it
+    wrong under NSSM the same way you'd get it wrong double-clicking
+    the exe from the wrong folder, and the service comes up "healthy"
+    with a bare `users` collection and none of this app's schema,
+    silently.
+  - Logs stdout/stderr to `backend/pocketbase-service.log` (rotated at
+    10MB) - a Go panic before PocketBase's own logger initializes only
+    ever shows up on the console, which nothing watches on an
+    unattended service otherwise.
+- **Prerequisite, not bundled:** `nssm.exe` needs to be downloaded from
+  <https://nssm.cc/download> and placed in `backend/` next to
+  `pocketbase.exe` before running the script - same "grab it
+  separately" situation as PocketBase itself (see Prerequisites above).
+  It's excluded from the AI-upload zip for the same reason (see
+  `ignore.bat`).
+- **One-time on-site step**, run as Administrator, after PocketBase has
+  already been confirmed working manually at least once:
+  ```powershell
+  cd backend
+  .\install-service.ps1
+  ```
+  Re-running it (e.g. after changing `-Port`) cleanly removes and
+  reinstalls the service rather than erroring on "already exists."
+  `.\install-service.ps1 -Uninstall` removes the service without
+  touching `pb_data/` or any backups.
+- **Stop any manually-started `pocketbase.exe` first** (Ctrl+C in its
+  terminal) - it's already holding the port, and the service will fail
+  to bind if both try to run at once.
+- Verify with `Get-Service GateMarkServer` or by browsing
+  `http://127.0.0.1:8090/api/health`; `nssm status GateMarkServer` also
+  works if `nssm.exe` is on hand.
+- Not yet verified against an actual reboot/kill-the-process test on a
+  real Windows machine (no Windows environment available in this
+  session) - the script's logic was reviewed carefully against NSSM's
+  documented parameter behavior, but an on-site "reboot the laptop" and
+  "Task Manager -> End Task the pocketbase.exe process" check are both
+  still worth doing once, the same way item 1's on-device smoke test is
+  still open.
 
 ## The mobile app (`mobile/`)
 
@@ -903,10 +976,14 @@ was - it needs an actual device, actual Wi-Fi, and someone physically
 pulling the plug mid-shift.
 
 Separately, see "Deployment hardening - action plan" above before the
-first real on-site install: items 1-2 (stable server IP, automatic
-backups) are now done; item 3 (auto-restart on boot) is the remaining
-one most likely to cause a real outage and is worth doing before
-anyone's guy shows up with a laptop, not after. Item 2's offsite half
-also still needs someone to actually pick a `-Destination` and wire up
-the Scheduled Task for this specific venue - see "Automatic backups"
-under the backend section for the one-liner.
+first real on-site install: items 1-3 (stable server IP, automatic
+backups, auto-restart on boot & crash) are now done. Item 2's offsite
+half and item 3's service install are both still one-time on-site steps
+that need a human to actually run them once - see "Automatic backups"
+for the `-Destination`/Scheduled Task one-liner, and "Auto-restart on
+boot & crash" for the `install-service.ps1` one-liner - neither happens
+on its own just because the code exists. Item 4 (kiosk-locking the
+counter devices so staff can't swipe out of the app or change Wi-Fi) is
+now the highest-value remaining gap, followed by item 5 (remote-access
+tooling surviving a reboot); items 6-7 are lower-urgency/deliberately
+accepted for now (see their entries above).
