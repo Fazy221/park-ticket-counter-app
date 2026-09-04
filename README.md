@@ -257,7 +257,7 @@ npx expo start
 7. **On-site real-conditions test (router on battery, power cut
    mid-shift, concurrent scans across counters) - not done.**
 
-## Deployment hardening - action plan (item 1 done, 2-7 not started)
+## Deployment hardening - action plan (items 1-2 done, 3-7 not started)
 
 Surfaced while working through how this actually gets installed on a
 real venue laptop by someone other than whoever built it, with no
@@ -288,15 +288,20 @@ POS still today) eventually grew for the same reason.
    right thing to do on-site if possible - the app-side scan is what
    keeps things working in the meantime, or at venues where that's not
    an option.
-2. **No backup exists.** PocketBase ships a built-in automatic backup
-   feature (`app.settings().backups.cron`, confirmed present but unused
-   in this project - nothing in `pb_hooks/` or `pb_migrations/`
-   touches it) and it was never turned on. Every ticket, every audit
-   event, every dollar of redemption history lives in one SQLite file
-   on one laptop - a spilled coffee, theft, or disk corruption is total,
-   unrecoverable data loss. Turning on the cron and pointing it at
-   scheduled offsite copies (even a periodic manual copy to a USB drive
-   or cloud folder) is a cheap fix for a total-loss risk.
+2. ~~**No backup exists.**~~ **Done** - see "Automatic backups" under
+   the backend section below for the actual mechanism. Short version:
+   PocketBase's built-in backup cron (`app.settings().backups.cron`) was
+   present but unused - nothing in `pb_hooks/` or `pb_migrations/`
+   touched it, and every ticket, every audit event, every dollar of
+   redemption history lived in one SQLite file on one laptop with no
+   copy anywhere. A migration now turns the cron on (daily, local zips
+   in `pb_data/backups/`), and a new `backup-offsite.ps1` script copies
+   those zips somewhere off the laptop on a schedule. **The local cron
+   half is fully automatic; the offsite half still needs a one-time
+   on-site decision** - someone has to pick and configure an actual
+   `-Destination` (USB drive, network share, synced cloud folder) for
+   this specific venue and wire it into a Scheduled Task, the same shape
+   as item 3's still-open restart-on-boot task below.
 3. **Nothing restarts PocketBase if it stops.** The launch mechanism
    discussed so far is a `.bat` file someone double-clicks. If the
    laptop reboots for any reason (Windows Update, power cut, someone
@@ -425,6 +430,56 @@ skips this whole step's migration (you'd just see the default `users`
 collection and nothing else). Phones need the laptop's actual LAN IPv4
 (`ipconfig` -> Wi-Fi adapter), and Windows Firewall needs to allow that
 port on the Private network profile.
+
+### Automatic backups (deployment hardening item 2)
+
+Fixes "no backup exists" from the action plan above. Two independent
+pieces - the first is fully automatic once deployed, the second still
+needs a one-time on-site decision:
+
+- **`1740000400_enable_auto_backups.js`** turns on PocketBase's built-in
+  backup cron (`app.settings().backups`) - daily at 4am, keeping the
+  newest 14 zips in `pb_data/backups/`. This alone already covers
+  corruption/accidental-delete recovery, and needs nothing further -
+  it's live the moment this migration applies, same as any other
+  migration in this folder.
+- **`backup-offsite.ps1`** covers what the cron backup on its own
+  can't: those 14 zips still live on the same disk as the live database,
+  so laptop theft/damage/spilled-coffee takes the backups with it. This
+  script copies new zips from `pb_data/backups/` out to a
+  `-Destination` folder - a USB drive letter, a mapped network share, or
+  a folder already synced by whatever cloud tool (OneDrive/Dropbox/etc.)
+  is on the laptop. Deliberately not wired to a specific cloud provider's
+  API, to avoid adding a real internet dependency to a system whose whole
+  design point is not needing one; if a synced folder is what's
+  available on-site, point `-Destination` at it and let that tool do the
+  "off this laptop" part on its own schedule.
+
+  **The one-time on-site step this doesn't automate:** deciding what
+  `-Destination` actually is at this venue (which drive letter, which
+  share, which synced folder), then wiring it into a Windows Scheduled
+  Task so it runs unattended - the same "needs a human to set it up once,
+  then never again" shape as item 3's restart-on-boot task below:
+
+  ```powershell
+  schtasks /Create /TN "GateMark Offsite Backup" /SC DAILY /ST 04:15 `
+    /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"C:\gatemark\backend\backup-offsite.ps1`" -Destination `"D:\GateMarkBackups`"" `
+    /RL LIMITED
+  ```
+
+  Scheduled 15 minutes after the 4am backup cron so that night's zip
+  already exists by the time the copy runs. Logs its own run history to
+  `backend/backup-offsite.log` (separate from PocketBase's own logs) so
+  "did last night's copy actually work" is checkable without needing to
+  be watching the console at 4am - worth a glance the first few times a
+  Scheduled Task runs it, since a wrong `-Destination` (typo'd drive
+  letter, unmounted share) fails loudly in that log rather than silently.
+
+  Restoring from either location is the same either way: PocketBase's
+  own dashboard (Settings -> Backups, or `$app.restoreBackup()`) can
+  restore from any zip in `pb_data/backups/` directly; a zip that only
+  exists at the offsite `-Destination` needs to be copied back into
+  `pb_data/backups/` first before the dashboard will see it.
 
 ## The mobile app (`mobile/`)
 
@@ -848,7 +903,10 @@ was - it needs an actual device, actual Wi-Fi, and someone physically
 pulling the plug mid-shift.
 
 Separately, see "Deployment hardening - action plan" above before the
-first real on-site install: item 1 (stable server IP) is now done;
-items 2-3 (automatic backups, auto-restart on boot) are the remaining
-ones most likely to cause a real outage and are worth doing before
-anyone's guy shows up with a laptop, not after.
+first real on-site install: items 1-2 (stable server IP, automatic
+backups) are now done; item 3 (auto-restart on boot) is the remaining
+one most likely to cause a real outage and is worth doing before
+anyone's guy shows up with a laptop, not after. Item 2's offsite half
+also still needs someone to actually pick a `-Destination` and wire up
+the Scheduled Task for this specific venue - see "Automatic backups"
+under the backend section for the one-liner.
