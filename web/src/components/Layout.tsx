@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Ticket, AlertTriangle, Users, MonitorCheck, LogOut } from "lucide-react";
+import { LayoutDashboard, Ticket, AlertTriangle, Users, MonitorCheck, LogOut, FileBarChart } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useEffect, useState } from "react";
 import { pb } from "@/lib/pb";
@@ -8,6 +8,7 @@ const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/tickets", label: "Tickets", icon: Ticket },
   { to: "/conflicts", label: "Conflicts", icon: AlertTriangle },
+  { to: "/reports", label: "Reports", icon: FileBarChart },
   { to: "/staff", label: "Staff", icon: Users },
   { to: "/counters", label: "Counters", icon: MonitorCheck },
 ];

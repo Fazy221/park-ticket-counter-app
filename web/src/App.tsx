@@ -6,6 +6,7 @@ import { Login } from "@/pages/Login";
 import { Dashboard } from "@/pages/Dashboard";
 import { Tickets } from "@/pages/Tickets";
 import { Conflicts } from "@/pages/Conflicts";
+import { Reports } from "@/pages/Reports";
 import { StaffPage } from "@/pages/Staff";
 import { Counters } from "@/pages/Counters";
 
@@ -25,6 +26,7 @@ export function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/tickets" element={<Tickets />} />
             <Route path="/conflicts" element={<Conflicts />} />
+            <Route path="/reports" element={<Reports />} />
             <Route path="/staff" element={<StaffPage />} />
             <Route path="/counters" element={<Counters />} />
           </Route>

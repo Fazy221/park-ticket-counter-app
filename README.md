@@ -75,9 +75,9 @@ force:
   (search, override status with required reason), Conflicts queue
   (derived from the event log, not a stored flag - see the web section
   below), Staff & Counters CRUD (deactivate via `active`, no hard delete
-  exposed). See "The web superadmin (`web/`)" below for the real gotchas
+  exposed), Reports (date-range presets + custom range, CSV + PDF
+  export). See "The web superadmin (`web/`)" below for the real gotchas
   hit building it.
-- ❌ **Reports/export** - not built. Plan section 5.
 - ❌ **Design system pass across both apps** - not a *pass* exactly, but
   the web app reused the mobile app's exact color tokens
   (`gatemark.primary` etc. in `web/tailwind.config.js` mirror
@@ -101,7 +101,15 @@ force:
    fixed during that verification - worth reading before extending this
    app, since a couple are non-obvious PocketBase/SDK gotchas that'll
    bite again on any new screen that queries the same collection twice.
-5. **Reports + CSV/PDF export - not started.**
+5. ~~Reports + CSV/PDF export~~ - done: date-range presets (Today,
+   Yesterday, Last 7/30 days, This month) plus a custom range, a summary
+   view (totals by event type, by counter, by staff), a full-detail CSV
+   export of the underlying `ticket_events` rows for the range, and a
+   roll-up-only PDF (no per-ticket detail - see "The web superadmin"
+   below for why). Verified the same way as the rest of the web app: real
+   browser, real file downloads captured and checked (CSV content
+   diffed against the seeded data, PDF header/size sanity-checked and
+   rendered to an image to confirm it isn't garbled).
 6. **Design system pass across both apps - not started** as a real pass
    (colors are already shared - see above).
 7. **On-site real-conditions test (router on battery, power cut
@@ -460,12 +468,22 @@ several bugs worth knowing about before extending this app:
   through with empty output. Kill by PID (`ps`/`grep` for the actual
   process, or track the PID from when you started it) instead of by
   pattern when a real PocketBase server might be running.
+- **jsPDF pulls in ~250KB of transitive deps (html2canvas, dompurify)
+  that no other screen needs.** A static top-level import put that
+  weight in the main bundle every superadmin downloads on login, not
+  just the one exporting a PDF. Fixed with a dynamic `import("@/lib/
+  pdfReport")` inside the click handler (see `Reports.tsx`) - Vite
+  code-splits it into its own chunk that only loads when "Export PDF" is
+  actually clicked, which took the main JS chunk from ~680KB back down
+  to ~256KB. Worth the same treatment for any future heavy,
+  rarely-used library (a chart package, another export format) rather
+  than a static import by default.
 
 Structure: `src/lib/` (PocketBase client, shared types, date/format
-helpers, the custom-route wrapper), `src/hooks/` (`useLiveList` -
-realtime-backed list fetch, `useOpenConflicts`, `useTicketStatusCounts`),
-`src/components/` (layout, shared dialogs, `ui/` primitives),
-`src/pages/` (one per nav item). Design tokens
+helpers, the custom-route wrapper, CSV/PDF generation), `src/hooks/`
+(`useLiveList` - realtime-backed list fetch, `useOpenConflicts`,
+`useTicketStatusCounts`), `src/components/` (layout, shared dialogs,
+`ui/` primitives), `src/pages/` (one per nav item). Design tokens
 (`gatemark.primary`/`accent`/etc. in `tailwind.config.js`) are copied
 from `mobile/src/theme/colors.ts` verbatim rather than picked separately,
 so the two apps don't visually diverge - see "Design system pass" above
@@ -497,13 +515,34 @@ section above:
   doing that comparison client-side instead of a single server-side
   filter - fine at this app's scale, worth revisiting if the venue ever
   has enough concurrent conflicts for that to matter.
+- **PDF export is summary-only; CSV export is where the per-ticket detail
+  lives.** A PDF with every individual scan row for a busy venue's "last
+  30 days" range isn't something anyone actually wants to print or hand
+  to a manager - it'd run to dozens of pages of a table. The PDF
+  (`lib/pdfReport.ts`) only ever contains the roll-ups (totals by event
+  type, by counter, by staff); the CSV (`lib/csv.ts`) has the full
+  `ticket_events` detail for the selected range, timestamp down to the
+  millisecond, meant for opening in a spreadsheet rather than printing.
+  If a future request wants a detailed *printable* report too, that's a
+  different, longer document - don't just add the detail rows to the
+  existing summary PDF.
+- **The "overrides" count on Reports' by-staff breakdown deliberately
+  excludes `conflict_flagged`** (it counts `voided`, `reopened`, and
+  `conflict_resolved` only). A flagged conflict is a system-detected
+  outcome of a scan attempt, not a deliberate corrective action the way
+  voiding/reopening/resolving are - counting it as an "override" would
+  overstate how much a staff member who just got unlucky with a race
+  condition actually *did*. It still shows up in the "Conflicts flagged"
+  total and in the full CSV detail, just not folded into that specific
+  per-staff number.
 
 ## Suggested next step
 
 See "What's next" near the top of this file for the full annotated build
-order. Items 1-4 (schema, mobile, conflict-detection, web superadmin) are
-done and verified; item 5 (Reports + CSV/PDF export) is the next
-unstarted piece of the original plan. If picking that up, "The web
-superadmin (`web/`)" section above - especially the requestKey/
-auto-cancellation gotcha - is worth reading first, since a Reports screen
-will likely add more concurrent same-collection queries.
+order. Items 1-5 (schema, mobile, conflict-detection, web superadmin,
+reports) are all done and verified; item 6 (a real design-system pass
+across mobile + web) and item 7 (the on-site real-conditions test) are
+the two unstarted pieces of the original plan. Item 7 in particular
+can't be verified from a dev environment the way everything else here
+was - it needs an actual device, actual Wi-Fi, and someone physically
+pulling the plug mid-shift.
