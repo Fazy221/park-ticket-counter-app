@@ -10,11 +10,13 @@ import { PinPad } from "@/components/PinPad";
 import { ConnectivityBadge } from "@/components/ConnectivityBadge";
 import { fetchStaffNames, StaffLite } from "@/lib/api";
 import { getDeviceConfig, DeviceConfig } from "@/lib/deviceConfig";
+import { useServerUrl } from "@/hooks/useServerUrl";
 import { useAuth } from "@/context/AuthContext";
 
 export default function Login() {
   const router = useRouter();
   const { login } = useAuth();
+  const serverUrl = useServerUrl();
 
   const [config, setConfig] = useState<DeviceConfig | null>(null);
   const [staff, setStaff] = useState<StaffLite[]>([]);
@@ -39,18 +41,24 @@ export default function Login() {
   }, []);
 
   useEffect(() => {
-    getDeviceConfig().then((c) => {
-      setConfig(c);
-      if (c) loadStaff(c.serverUrl);
-    });
-  }, [loadStaff]);
+    getDeviceConfig().then(setConfig);
+  }, []);
+
+  // Uses the live, self-healing address (useServerUrl) rather than
+  // config.serverUrl, which is a one-time read from setup and won't
+  // reflect a mid-session rediscovery (README "Deployment hardening" item
+  // 1) - relevant here specifically because this is the screen staff hit
+  // right after a device reconnects.
+  useEffect(() => {
+    if (serverUrl) loadStaff(serverUrl);
+  }, [serverUrl, loadStaff]);
 
   const submitPin = async () => {
-    if (!config || !selected) return;
+    if (!serverUrl || !selected) return;
     setSubmitting(true);
     setPinError(null);
     try {
-      await login(config.serverUrl, selected.username, pin);
+      await login(serverUrl, selected.username, pin);
       router.replace("/scan");
     } catch (err) {
       setPinError("Incorrect PIN. Try again.");
@@ -98,7 +106,7 @@ export default function Login() {
               <Text style={styles.errorText}>{loadError}</Text>
               <Pressable
                 style={styles.retryButton}
-                onPress={() => config && loadStaff(config.serverUrl)}
+                onPress={() => serverUrl && loadStaff(serverUrl)}
               >
                 <Text style={styles.retryText}>Retry</Text>
               </Pressable>

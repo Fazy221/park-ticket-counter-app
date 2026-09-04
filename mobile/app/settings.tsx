@@ -6,7 +6,9 @@ import { ChevronLeft, ServerCog, Trash2 } from "lucide-react-native";
 import { colors } from "@/theme/colors";
 import { fonts, type } from "@/theme/typography";
 import { useDeviceConfig } from "@/hooks/useDeviceConfig";
+import { useServerUrl } from "@/hooks/useServerUrl";
 import { clearDeviceConfig } from "@/lib/deviceConfig";
+import { resetServerConnection } from "@/lib/serverConnection";
 import { forgetAllStaffTokens } from "@/lib/authTokenCache";
 import { getPendingCount } from "@/lib/queue";
 import { stopAutoSync } from "@/lib/queue";
@@ -15,6 +17,13 @@ import { stopConnectivityMonitor } from "@/lib/connectivity";
 export default function Settings() {
   const router = useRouter();
   const config = useDeviceConfig();
+  // Live address (README "Deployment hardening" item 1) rather than
+  // config.serverUrl, which is only re-read on this screen's mount - if a
+  // rediscovery happens while a staff member is sitting on this screen,
+  // this reflects it immediately instead of on the next visit. Falls back
+  // to config.serverUrl for the brief window before serverConnection has
+  // finished reading AsyncStorage.
+  const liveServerUrl = useServerUrl();
   const [pendingCount, setPendingCount] = useState(0);
 
   useEffect(() => {
@@ -34,6 +43,7 @@ export default function Settings() {
             await clearDeviceConfig();
             stopAutoSync();
             stopConnectivityMonitor();
+            resetServerConnection();
             router.replace("/setup");
           },
         },
@@ -56,6 +66,7 @@ export default function Settings() {
           await clearDeviceConfig();
           stopAutoSync();
           stopConnectivityMonitor();
+          resetServerConnection();
           router.replace("/setup");
         },
       },
@@ -74,7 +85,7 @@ export default function Settings() {
       {config ? (
         <View style={styles.infoBlock}>
           <Text style={styles.infoLabel}>Server</Text>
-          <Text style={styles.infoValue}>{config.serverUrl}</Text>
+          <Text style={styles.infoValue}>{liveServerUrl ?? config.serverUrl}</Text>
           <Text style={[styles.infoLabel, { marginTop: 12 }]}>Counter</Text>
           <Text style={styles.infoValue}>{config.counterName}</Text>
         </View>

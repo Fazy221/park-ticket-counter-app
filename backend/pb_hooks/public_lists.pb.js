@@ -49,3 +49,20 @@ routerAdd("GET", "/api/counters", (e) => {
 
   return e.json(200, result);
 });
+
+// GET /api/discover
+// Deployment hardening item 1 (see README): the venue router can hand the
+// server laptop a new DHCP lease at any point (reboot, firmware update),
+// and nothing previously re-found it - every counter device just broke
+// silently, hard-pinned to whatever IP it was configured with at setup.
+// This route exists purely so a device that's lost its known-good address
+// can sweep the local subnet and positively identify which host, if any,
+// is actually this GateMark server - PocketBase's built-in /api/health
+// only confirms "something PocketBase is listening here", which isn't
+// enough to trust during a scan (any other PocketBase instance, or in
+// principle any web server, would also 200). Deliberately tiny and
+// unauthenticated, same reasoning as staff-names/counters above: nothing
+// sensitive in the response, needed before any token exists.
+routerAdd("GET", "/api/discover", (e) => {
+  return e.json(200, { service: "gatemark" });
+});

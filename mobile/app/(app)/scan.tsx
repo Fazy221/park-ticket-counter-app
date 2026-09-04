@@ -8,6 +8,7 @@ import { ScanResultCard } from "@/components/ScanResultCard";
 import { ManualEntryModal } from "@/components/ManualEntryModal";
 import { useAuth } from "@/context/AuthContext";
 import { useDeviceConfig } from "@/hooks/useDeviceConfig";
+import { useServerUrl } from "@/hooks/useServerUrl";
 import { enqueueScan, getScanById, subscribeToQueueChanges, syncPendingItems } from "@/lib/queue";
 import { undoScan, fetchStaffNames, fetchCounters, StaffLite, CounterLite } from "@/lib/api";
 import type { PendingScanRow } from "@/lib/db";
@@ -17,6 +18,7 @@ const UNDO_WINDOW_SECONDS = 120;
 export default function Scan() {
   const { staff, token } = useAuth();
   const config = useDeviceConfig();
+  const serverUrl = useServerUrl();
   const [permission, requestPermission] = useCameraPermissions();
 
   const [manualEntryVisible, setManualEntryVisible] = useState(false);
@@ -34,22 +36,22 @@ export default function Scan() {
   // redeemed" card. Best-effort - if this fails (offline at the moment of
   // mount) the card just shows fewer details, it's not load-bearing.
   useEffect(() => {
-    if (!config) return;
-    fetchStaffNames(config.serverUrl)
+    if (!serverUrl) return;
+    fetchStaffNames(serverUrl)
       .then((list: StaffLite[]) => {
         const map: Record<string, string> = {};
         list.forEach((s) => (map[s.id] = s.name));
         setStaffMap(map);
       })
       .catch(() => {});
-    fetchCounters(config.serverUrl)
+    fetchCounters(serverUrl)
       .then((list: CounterLite[]) => {
         const map: Record<string, string> = {};
         list.forEach((c) => (map[c.id] = c.name));
         setCounterMap(map);
       })
       .catch(() => {});
-  }, [config]);
+  }, [serverUrl]);
 
   // Watch the active scan row until it resolves.
   useEffect(() => {
@@ -93,7 +95,10 @@ export default function Scan() {
       // Try to resolve immediately if we're online, instead of waiting
       // for the next background tick - this is what makes an online scan
       // feel instant rather than always showing "Pending sync" first.
-      syncPendingItems(config.serverUrl).catch(() => {});
+      // syncPendingItems reads the current server address itself (see
+      // queue.ts / serverConnection.ts), so this stays correct even if the
+      // address changed since this screen last fetched device config.
+      syncPendingItems().catch(() => {});
     },
     [config, staff]
   );
@@ -105,12 +110,12 @@ export default function Scan() {
   };
 
   const handleUndo = async () => {
-    if (!config || !token || !activeRow?.result_json) return;
+    if (!serverUrl || !token || !activeRow?.result_json) return;
     const result = JSON.parse(activeRow.result_json);
     if (!result.ticket_id) return;
     setUndoing(true);
     try {
-      await undoScan(config.serverUrl, token, result.ticket_id);
+      await undoScan(serverUrl, token, result.ticket_id);
       scanNext();
     } catch {
       // Leave the result on screen - most likely the 2-minute window

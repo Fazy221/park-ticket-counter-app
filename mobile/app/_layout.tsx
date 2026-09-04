@@ -5,7 +5,7 @@ import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_7
 import { View } from "react-native";
 import { AuthProvider } from "@/context/AuthContext";
 import { initDb } from "@/lib/db";
-import { getDeviceConfig } from "@/lib/deviceConfig";
+import { initServerConnection } from "@/lib/serverConnection";
 import { startBackgroundServices } from "@/lib/bootstrap";
 
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -28,9 +28,11 @@ export default function RootLayout() {
     // If this device already went through setup in a previous session,
     // start draining the queue and watching connectivity right away -
     // don't wait for a login. (setup.tsx starts these itself the moment
-    // setup completes, for a device's first run.)
-    getDeviceConfig().then((config) => {
-      if (config) startBackgroundServices(config.serverUrl);
+    // setup completes, for a device's first run.) initServerConnection()
+    // populates serverConnection.ts's live address from AsyncStorage
+    // before the monitors start reading it.
+    initServerConnection().then((serverUrl) => {
+      if (serverUrl) startBackgroundServices();
     });
   }, []);
 

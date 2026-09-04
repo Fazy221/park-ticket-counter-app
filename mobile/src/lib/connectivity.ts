@@ -1,5 +1,6 @@
 import NetInfo from "@react-native-community/netinfo";
 import { checkServerReachable } from "./api";
+import { getServerUrl, recoverServerUrl } from "./serverConnection";
 
 // WHY NOT JUST NetInfo.isInternetReachable: that flag reflects whether the
 // device can reach the public internet (NetInfo's default reachability
@@ -10,6 +11,10 @@ import { checkServerReachable } from "./api";
 // So the source of truth here is an actual GET /api/health against the
 // configured server; NetInfo is only used as a trigger to re-check sooner
 // after a Wi-Fi reconnect, not as the answer itself.
+//
+// The address itself is read fresh from serverConnection.ts on every poll
+// rather than captured once - see that module's header comment and README
+// "Deployment hardening" item 1.
 
 type Listener = (connected: boolean) => void;
 const listeners = new Set<Listener>();
@@ -35,11 +40,28 @@ export function subscribeToConnectivity(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
-export function startConnectivityMonitor(serverUrl: string, pollMs = 7000): () => void {
+export function startConnectivityMonitor(pollMs = 7000): () => void {
   stopConnectivityMonitor();
 
-  const check = () => {
-    checkServerReachable(serverUrl).then(setState);
+  const check = async () => {
+    const url = getServerUrl();
+    if (!url) {
+      setState(false);
+      return;
+    }
+
+    if (await checkServerReachable(url)) {
+      setState(true);
+      return;
+    }
+
+    // Unreachable at the address on file - before reporting "disconnected",
+    // see if the server just moved (a new DHCP lease - README "Deployment
+    // hardening" item 1). Cheap to call on every failed poll: throttled
+    // and de-duplicated inside serverConnection/serverDiscovery, so this
+    // is a no-op most ticks.
+    const recovered = await recoverServerUrl();
+    setState(recovered ? await checkServerReachable(recovered) : false);
   };
 
   check();

@@ -38,6 +38,14 @@ export async function clearDeviceConfig(): Promise<void> {
   await AsyncStorage.multiRemove([KEYS.serverUrl, KEYS.counterId, KEYS.counterName]);
 }
 
+// Patches just the server address, leaving counter config untouched - used
+// by serverConnection.ts after a successful LAN rediscovery (README
+// "Deployment hardening" item 1), so the next app launch starts from the
+// address that actually worked last, not the one from initial setup.
+export async function updateServerUrl(serverUrl: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.serverUrl, serverUrl);
+}
+
 // Strips a trailing slash so callers can always do `${serverUrl}/api/...`
 // without worrying whether the setup screen's input had one.
 export function normalizeServerUrl(input: string): string {

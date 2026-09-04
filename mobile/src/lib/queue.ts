@@ -2,6 +2,7 @@ import { getDb, initDb, PendingScanRow } from "./db";
 import { redeemTicket, RedeemResult, NetworkError, ApiError } from "./api";
 import { getStaffToken } from "./authTokenCache";
 import { generateUuid } from "./uuid";
+import { getServerUrl, recoverServerUrl } from "./serverConnection";
 
 // ---- tiny pub/sub so screens can react to queue changes without polling --
 type Listener = () => void;
@@ -81,7 +82,13 @@ let syncing = false;
 // down) but keeps going past ApiErrors (a rejected item - unknown QR,
 // inactive counter - is a real, permanent failure, not a connectivity
 // problem, and shouldn't block everything queued after it).
-export async function syncPendingItems(serverUrl: string): Promise<void> {
+//
+// Reads the server's address fresh from serverConnection.ts on every call
+// rather than taking it as a parameter - see that module's header comment
+// and README "Deployment hardening" item 1. That also means a queue drain
+// started just before a rediscovery completes still targets the address
+// that was current when each request actually went out.
+export async function syncPendingItems(): Promise<void> {
   if (syncing) return; // don't overlap a periodic tick with a manual "sync now"
   syncing = true;
   try {
@@ -92,6 +99,9 @@ export async function syncPendingItems(serverUrl: string): Promise<void> {
     );
 
     for (const item of pending) {
+      const serverUrl = getServerUrl();
+      if (!serverUrl) return; // device isn't set up (or serverConnection hasn't initialized yet)
+
       await db.runAsync(`UPDATE pending_scans SET status = 'syncing' WHERE id = ?`, [item.id]);
       notify();
 
@@ -140,6 +150,12 @@ export async function syncPendingItems(serverUrl: string): Promise<void> {
             [item.id]
           );
           notify();
+          // The address that just failed may have changed underneath us
+          // (README "Deployment hardening" item 1) - try to recover it now
+          // rather than waiting for the connectivity monitor's own next
+          // poll, so a queue doesn't sit "pending" any longer than it has
+          // to once the real fix (rediscovery) has already run.
+          await recoverServerUrl();
           return;
         }
         const message = err instanceof ApiError ? err.message : "Unexpected sync error";
@@ -177,20 +193,20 @@ async function resolveSynced(item: PendingScanRow, result: RedeemResult): Promis
 // Manual retry for a row stuck in 'failed' - surfaced as a button in the
 // Session log / Undo UI rather than auto-retried, since a failed item was
 // rejected by the server for a reason that (mostly) won't fix itself.
-export async function retryFailedItem(serverUrl: string, id: number): Promise<void> {
+export async function retryFailedItem(id: number): Promise<void> {
   await ensureReady();
   const db = getDb();
   await db.runAsync(`UPDATE pending_scans SET status = 'pending', error = NULL WHERE id = ?`, [id]);
   notify();
-  await syncPendingItems(serverUrl);
+  await syncPendingItems();
 }
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 
-export function startAutoSync(serverUrl: string, intervalMs = 5000): () => void {
+export function startAutoSync(intervalMs = 5000): () => void {
   stopAutoSync();
   intervalHandle = setInterval(() => {
-    syncPendingItems(serverUrl).catch(() => {
+    syncPendingItems().catch(() => {
       /* errors are recorded per-item above; nothing else to do here */
     });
   }, intervalMs);

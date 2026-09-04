@@ -42,6 +42,148 @@ force:
   through to `/api/redeem` as `was_queued_offline` so a losing sync logs
   `conflict_flagged` instead of a plain `duplicate_attempt`.
 
+## File & folder structure
+
+```
+gatemark/
+├── README.md               # this file - architecture, status, open items
+├── ignore.bat               # builds the AI-upload zip (WinRAR) - see exclusions below
+│
+├── backend/                 # PocketBase (Go binary + embedded SQLite), runs on-site
+│   ├── pb_hooks/             # server-side JS hooks - ALL custom business logic lives here
+│   │   ├── auth.pb.js
+│   │   ├── redeem.pb.js          # core redemption + idempotency logic
+│   │   ├── undo_scan.pb.js
+│   │   ├── conflict_resolve.pb.js
+│   │   ├── ticket_override.pb.js
+│   │   ├── session_log.pb.js
+│   │   ├── cleanup.pb.js
+│   │   └── public_lists.pb.js
+│   ├── pb_migrations/        # schema history, applied in order on server start
+│   │   └── (4 migration files, chronological - schema lives here, not in one file)
+│   └── pb_public/            # web/dist gets copied here to be served as the superadmin PWA
+│                              # (empty in the repo until a web build is deployed)
+│
+├── mobile/                   # Expo/React Native app for counter staff (Expo Router)
+│   ├── app/                   # file-based routes
+│   │   ├── index.tsx, login.tsx, setup.tsx, settings.tsx
+│   │   ├── _layout.tsx
+│   │   └── (app)/              # authenticated routes
+│   │       ├── scan.tsx, session-log.tsx, _layout.tsx
+│   ├── src/
+│   │   ├── components/         # PinPad, ScanResultCard, ManualEntryModal, ConnectivityBadge, StaffPicker
+│   │   ├── context/AuthContext.tsx
+│   │   ├── hooks/               # useConnectivity, useDeviceConfig, usePendingCount, useServerUrl
+│   │   ├── lib/                  # queue.ts (offline queue), db.ts, serverDiscovery.ts, serverConnection.ts,
+│   │   │                         # connectivity.ts, api.ts, authTokenCache.ts, bootstrap.ts, deviceConfig.ts, uuid.ts
+│   │   └── theme/                # colors.ts, typography.ts
+│   ├── assets/                   # icon.png, splash.png, adaptive-icon.png, gen_mark.py (icon-generation script)
+│   └── app.json, eas.json, babel.config.js, metro.config.js, tsconfig.json
+│
+└── web/                       # Vite + React + Tailwind superadmin - built static, served by PocketBase
+    ├── public/                 # sw.js, manifest.webmanifest, favicon.svg
+    ├── src/
+    │   ├── components/          # dialogs (Counter/Staff/Reason/TicketDetail forms), TicketHistory, Layout,
+    │   │   └── ui/                # shared primitives: Alert, Badge, Button, Card, Dialog, EmptyState, Input
+    │   ├── context/AuthContext.tsx
+    │   ├── hooks/                # useLiveList, useOpenConflicts, useTicketStatusCounts
+    │   ├── lib/                   # api.ts, pb.ts (PocketBase SDK), pbErrors.ts, pdfReport.ts, csv.ts,
+    │   │                          # date.ts, format.ts, slug.ts, types.ts
+    │   ├── pages/                 # Dashboard, Tickets, Conflicts, Counters, Staff, Reports, Login
+    │   └── App.tsx, main.tsx, index.css
+    └── vite.config.ts, tailwind.config.js, tsconfig.json, postcss.config.js
+```
+
+**Not in the AI-upload zip** (see `ignore.bat`): `node_modules/`, `.git/`, `.expo/`,
+`web/dist/` (build output), `backend/pb_data/` (runtime DB + auto-generated
+`types.d.ts`), `backend/pb_data.zip` (backup), `*.db*`, `package-lock.json`
+(both apps), `*.tsbuildinfo`, `backend/pb_public/*`, `backend/LICENSE.md` +
+`CHANGELOG.md` (PocketBase's own bundled files, not project docs), and
+`mobile/assets/*.png` (binary icons). All of it is either generated,
+third-party, or a lockfile - none of it is needed to understand or edit the
+codebase, and cutting it keeps the zip to roughly a tenth of its raw size.
+
+## Running it locally (VS Code / PowerShell)
+
+Three pieces, three terminals, all running at once - open three PowerShell
+panes in VS Code's integrated terminal (terminal panel -> split, or the `+`
+dropdown -> "PowerShell") and leave them open for the session. **Start the
+backend first** - the web and mobile apps both need a reachable PocketBase
+to do anything beyond render an empty screen.
+
+**Prerequisites:** Node.js LTS + npm on PATH, and `pocketbase.exe` already
+sitting in `backend/` (it's excluded from git/the AI zip - see above - so
+confirm it's actually there; if not, grab the matching version from
+PocketBase's releases page).
+
+**Terminal 1 - backend:**
+
+```powershell
+cd backend
+.\pocketbase.exe serve --http=0.0.0.0:8090
+```
+
+- Must be run with `backend/` as the working directory - PocketBase only
+  auto-applies `pb_migrations/`/`pb_hooks/` that sit next to the binary's
+  own cwd, so running it from anywhere else silently skips every custom
+  migration (you'd just see a bare `users` collection and nothing else).
+- `--http=0.0.0.0:8090`, not the `127.0.0.1` default - otherwise no phone
+  on the LAN can reach it.
+- First run creates `pb_data/` and PocketBase's own Admin UI needs a
+  **superuser** account (separate from this app's `staff` auth collection)
+  to browse collections at `http://127.0.0.1:8090/_/`:
+  ```powershell
+  .\pocketbase.exe superuser upsert admin@example.com yourpassword
+  ```
+- One-time firewall rule so phones on the network can actually connect
+  (run as Administrator):
+  ```powershell
+  New-NetFirewallRule -DisplayName "PocketBase 8090" -Direction Inbound -Protocol TCP -LocalPort 8090 -Profile Private -Action Allow
+  ```
+- Find the laptop's LAN IPv4 for the mobile app's setup screen: `ipconfig`
+  -> the Wi-Fi adapter's "IPv4 Address."
+- `Ctrl+C` to stop. Don't kill it by matching the process name/pattern in
+  a script if another PocketBase instance might be running elsewhere on
+  the machine (see the `pkill -f` gotcha under the web section below) -
+  Ctrl+C in its own terminal, or `Stop-Process`, is safe.
+
+**Terminal 2 - web superadmin (`web/`):**
+
+```powershell
+cd web
+npm install
+npm run build
+Copy-Item .\dist\* ..\backend\pb_public\ -Recurse -Force
+```
+
+Then browse to `http://127.0.0.1:8090/` (backend must already be running).
+`web/src/lib/pb.ts` talks to PocketBase via `window.location.origin`, so
+the app only works correctly when it's loaded *from PocketBase itself* -
+`npm run dev` (Vite's own dev server on port 5173) is fine for pure
+UI/styling passes, but every PocketBase call from it will fail, since port
+5173 isn't port 8090. There's no watch/hot-reload for the real path
+currently - re-run the build + `Copy-Item` step and refresh the browser
+tab each time you want a change tested against live data.
+
+**Terminal 3 - mobile app (`mobile/`):**
+
+```powershell
+cd mobile
+npm install
+npx expo start
+```
+
+- Always `npx expo install <package>` for new dependencies, never plain
+  `npm install <package>` - see "The mobile app" section below for why
+  plain npm install breaks Metro's module resolution here.
+- Scan the QR code with Expo Go on a physical Android phone on the same
+  Wi-Fi network as the laptop. Expo Go's camera-scanning reliability
+  varies - a dev build (`npx expo run:android` or
+  `eas build --profile development`) is more reliable for real testing.
+- First launch's setup screen asks for the server address - enter
+  `http://<laptop-LAN-IP>:8090` from Terminal 1, or use "Find server
+  automatically" (`serverDiscovery.ts`).
+
 ## What's actually built vs. the plan
 
 - ✅ **Schema** (`pb_migrations/`) matches the plan's data model exactly,
@@ -115,6 +257,88 @@ force:
 7. **On-site real-conditions test (router on battery, power cut
    mid-shift, concurrent scans across counters) - not done.**
 
+## Deployment hardening - action plan (item 1 done, 2-7 not started)
+
+Surfaced while working through how this actually gets installed on a
+real venue laptop by someone other than whoever built it, with no
+technical person staying on-site afterward - a different question from
+"does the app work," and one the plan never covered. Ordered by how
+likely each gap is to actually cause an outage, not by how interesting
+it is to build. **The underlying architecture call - offline-first,
+LAN-only, one laptop as the local server - is not itself the problem**
+and shouldn't change; the venue's Wi-Fi/grid power genuinely can't be
+relied on, which is exactly why that call was made in the first place
+(see "Origin & architecture" above). What's missing is the operational
+layer that lets an unattended on-prem system like this survive weeks of
+real use instead of one clean demo day - the same layer older
+LAN-based POS systems (Aloha, Micros, and plenty of grocery/restaurant
+POS still today) eventually grew for the same reason.
+
+1. ~~**The server's LAN IP isn't stable, and every device is hard-pinned
+   to it.**~~ **Done** - see "Self-healing server address" under the
+   mobile app section below for the actual mechanism. Short version:
+   `mobile/src/lib/deviceConfig.ts` stored the server's IP once, at
+   setup, and never re-discovered it; the venue's router could hand the
+   laptop a different DHCP lease the moment it rebooted, and when it
+   did, every counter device broke silently and simultaneously. Devices
+   now detect that and re-find the server on their own by scanning the
+   local subnet, no manual re-setup needed. **This is a mitigation, not
+   a substitute for the network-side fix**: a static DHCP reservation
+   for the laptop's MAC address in the venue's router is still the
+   right thing to do on-site if possible - the app-side scan is what
+   keeps things working in the meantime, or at venues where that's not
+   an option.
+2. **No backup exists.** PocketBase ships a built-in automatic backup
+   feature (`app.settings().backups.cron`, confirmed present but unused
+   in this project - nothing in `pb_hooks/` or `pb_migrations/`
+   touches it) and it was never turned on. Every ticket, every audit
+   event, every dollar of redemption history lives in one SQLite file
+   on one laptop - a spilled coffee, theft, or disk corruption is total,
+   unrecoverable data loss. Turning on the cron and pointing it at
+   scheduled offsite copies (even a periodic manual copy to a USB drive
+   or cloud folder) is a cheap fix for a total-loss risk.
+3. **Nothing restarts PocketBase if it stops.** The launch mechanism
+   discussed so far is a `.bat` file someone double-clicks. If the
+   laptop reboots for any reason (Windows Update, power cut, someone
+   bumping the plug), the whole system is down until a human notices
+   and manually restarts it. Needs a Windows Scheduled Task set to
+   "run at startup," or a small service wrapper (e.g. NSSM), with a
+   restart-on-crash policy - not a file that depends on someone
+   remembering to click it.
+4. **Counter devices are unrestricted, general-purpose Android
+   phones.** No kiosk mode, no MDM, nothing stopping a staff member
+   from swiping out of the app, changing the Wi-Fi network, or
+   uninstalling it. "Device configuration survives a shift" currently
+   depends entirely on nobody touching settings. Worth locking each
+   device into single-app kiosk mode (Android's built-in Screen
+   Pinning at minimum; a proper MDM/Knox-style lock if this scales
+   past a couple of devices).
+5. **Remote-access software needs to survive a reboot, not just the
+   initial install.** Whatever remote-desktop tool (AnyDesk/TeamViewer/
+   Chrome Remote Desktop) gets installed for the on-site setup needs to
+   be configured for unattended access *and* to auto-launch on boot -
+   otherwise the day the laptop reboots on-site is also the day remote
+   access to it is lost, which is precisely the moment something's
+   likely gone wrong.
+6. **Know the real limits of the app's OTA update path.** `expo-updates`
+   and a `production` channel are already configured
+   (`mobile/app.json` / `mobile/eas.json`), so future JS-only fixes to
+   the counter app can in principle ship over-the-air without
+   re-sideloading every physical device. But an OTA check needs the
+   device to have general internet access at some point, which cuts
+   against the whole reason this system is LAN-only in the first
+   place - treat it as a partial safety net that works only if the
+   venue's Wi-Fi happens to also have internet, not a real update
+   strategy. Backend fixes (`pb_hooks/`) have no remote-update path at
+   all either way - those always need physical access to the laptop.
+7. **Minor, accepted trade-off for now:** PocketBase is served over
+   plain HTTP on the LAN, not HTTPS. Fine for a genuinely local-only
+   network, but `usesCleartextTraffic: true` already had to be forced
+   on once (see mobile section below) to make that work at all - a
+   sign this swims against the platform's default direction and is
+   worth revisiting if a future Android update tightens cleartext
+   restrictions further.
+
 If you're picking this up in a fresh session for one specific feature:
 the section above is enough to orient you. Only read further into the
 backend/mobile/web sections below if they're directly relevant to what
@@ -173,7 +397,12 @@ and the migration applies automatically.
   device-setup screen have something to show before any token exists.
   Both filter on `active = true` - a record with `active` left unset
   simply won't show up even though it exists, which looks like a broken
-  connection but isn't.
+  connection but isn't. Also now has a third route, `/api/discover`
+  (`{ service: "gatemark" }`) - added for deployment hardening item 1
+  below, so a device doing a LAN subnet scan can tell an actual GateMark
+  server apart from any other host that happens to answer on the same
+  port (PocketBase's own `/api/health` isn't enough for that - it'd say
+  yes for *any* PocketBase instance).
 
 **Read before deploying:** a 4-6 digit PIN as a PocketBase password is
 convenient, not strong. There's no extra rate-limiting beyond PocketBase's
@@ -304,6 +533,77 @@ The heuristic described above is gone. /api/redeem now requires an idempotency_k
 This isn't just a stricter version of the old heuristic - it fixes a real misclassification the heuristic had. A genuine second scan of an already-redeemed ticket by the same staff at the same counter (an honest double-tap, not a dropped connection) used to get treated as "that was actually my earlier success," because the heuristic had no way to tell the two apart. Keying on a fresh UUID per attempt instead of on staff+counter means a real duplicate (new row, new key) now correctly comes back as a conflict, and only an actual retry of the same row replays as valid.
 
 One edge worth knowing about, not a bug: if a scan's response gets cached, the ticket is then undone via /api/undo-scan, and only after that the original request finally retries (possible if a phone stayed offline long enough for staff to undo from a different device first), the retry replays the original "valid" result from before the undo - not the ticket's current state. That's correct idempotency behavior, not a glitch: the cached response is a record of what that request produced when it first ran, not a live lookup. It just means the replayed screen and the ticket's actual current status can briefly disagree if you check both at once.
+
+### Self-healing server address (deployment hardening item 1)
+
+Fixes the "every device is hard-pinned to the server's IP" gap from the
+action plan above. `mDNS`/`.local` hostnames, the fix suggested there as
+an alternative to a DHCP reservation, turned out not to actually work for
+this: Android's standard networking stack (what plain `fetch` runs on top
+of) doesn't resolve `.local` mDNS hostnames the way iOS does out of the
+box, and the counter devices are plain Android phones - pointing the app
+at `http://gatemark.local:8090` would just fail silently on-device even
+though it looks correct. So instead of a hostname, devices now actively
+re-find the server's current IP themselves when the one they have stops
+working:
+
+- **`mobile/src/lib/serverDiscovery.ts`** - the actual LAN scan. Given
+  the last address that worked, tries it again first (covers "briefly
+  unreachable," the common case, without a scan), then sweeps the
+  device's own `/24` subnet - derived from `NetInfo`'s wifi
+  `ipAddress`/`subnet` details - in batches of 20 concurrent requests,
+  probing each host's `/api/discover`. Stops at the first host that
+  answers `{ service: "gatemark" }`. Scoped to a `/24` (254 hosts)
+  deliberately, not a general CIDR scan - this app is explicitly
+  single-venue, and a `/24` is what the overwhelming majority of small
+  routers hand out. Throttled to one scan per 20s so a genuinely
+  offline server (not just moved) doesn't get hammered with a repeated
+  subnet sweep. Also exports a cold-start variant with no last-known
+  address, used by the setup screen's new "Find server automatically"
+  button.
+- **`mobile/src/lib/serverConnection.ts`** - the new single live source
+  of truth for "what's the server's address right now." Before this,
+  every caller that needed the address got it once - from
+  `useDeviceConfig()` or a value captured at app bootstrap - and kept
+  using that same string for the rest of the app's life even if the
+  server moved. `connectivity.ts`'s poll loop and `queue.ts`'s sync loop
+  now read the address from here on every tick instead of holding their
+  own copy, and call `recoverServerUrl()` (which wraps
+  `serverDiscovery.ts`, throttled the same way) the moment a request
+  against the current address fails to connect at all. A found address
+  gets persisted back to `deviceConfig` and broadcast to a small
+  listener set, so screens making their own live calls
+  (`useServerUrl()`, a new hook) pick it up immediately without needing
+  a remount.
+- **What changed in existing files:** `startConnectivityMonitor`,
+  `startAutoSync`, `syncPendingItems`, and `retryFailedItem` no longer
+  take a `serverUrl` parameter - they pull it from `serverConnection.ts`
+  internally, which is also what makes the "re-check the same address
+  that failed on every request" bug structurally impossible now rather
+  than just patched over. `login.tsx`, `scan.tsx`, and
+  `session-log.tsx`'s direct API calls (staff/counter lookups, PIN
+  login, undo) switched from `config.serverUrl` (a one-time
+  `useDeviceConfig()` read) to the new `useServerUrl()` hook for the
+  same reason. `settings.tsx` displays the live address too now, not
+  just the persisted one.
+- **Backend:** `public_lists.pb.js` gained `GET /api/discover` (see
+  above) purely as an identity check for the scan - PocketBase's
+  built-in `/api/health` confirms "something PocketBase is here," not
+  "this specific GateMark instance," which isn't a strong enough
+  signal to trust mid-scan.
+- **Verified against a real running PocketBase v0.40.1 instance** (not
+  just read through): `/api/discover` returns `{"service":"gatemark"}`
+  with a 200, doesn't collide with the built-in `/api/health` route, and
+  the core probe/parsing logic was exercised directly against both the
+  real server and a decoy plain-HTTP server on another port to confirm
+  it actually rejects a non-GateMark host rather than treating "port's
+  open" as success. Not yet verified inside the actual Expo/React
+  Native runtime (no device or emulator available in that session) -
+  `npx tsc --noEmit` passes clean across the whole mobile project, but
+  an on-device smoke test (kill the server, change its IP, confirm a
+  counter device picks the new one up within ~20-30s without any
+  manual re-setup) is still worth doing before this is trusted at a
+  real venue.
 
 ### App icons & splash
 
@@ -546,3 +846,9 @@ the two unstarted pieces of the original plan. Item 7 in particular
 can't be verified from a dev environment the way everything else here
 was - it needs an actual device, actual Wi-Fi, and someone physically
 pulling the plug mid-shift.
+
+Separately, see "Deployment hardening - action plan" above before the
+first real on-site install: item 1 (stable server IP) is now done;
+items 2-3 (automatic backups, auto-restart on boot) are the remaining
+ones most likely to cause a real outage and are worth doing before
+anyone's guy shows up with a laptop, not after.

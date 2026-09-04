@@ -6,6 +6,7 @@ import { colors } from "@/theme/colors";
 import { fonts, type } from "@/theme/typography";
 import { useAuth } from "@/context/AuthContext";
 import { useDeviceConfig } from "@/hooks/useDeviceConfig";
+import { useServerUrl } from "@/hooks/useServerUrl";
 import { getTodaysScans, retryFailedItem, subscribeToQueueChanges } from "@/lib/queue";
 import { fetchSessionLog, fetchStaffNames, SessionLogEntry, StaffLite } from "@/lib/api";
 import type { PendingScanRow } from "@/lib/db";
@@ -13,6 +14,7 @@ import type { PendingScanRow } from "@/lib/db";
 export default function SessionLog() {
   const { token } = useAuth();
   const config = useDeviceConfig();
+  const serverUrl = useServerUrl();
 
   const [queued, setQueued] = useState<PendingScanRow[]>([]);
   const [serverEvents, setServerEvents] = useState<SessionLogEntry[]>([]);
@@ -25,7 +27,7 @@ export default function SessionLog() {
   }, []);
 
   const refreshServer = useCallback(async () => {
-    if (!config || !token) return;
+    if (!config || !serverUrl || !token) return;
     setServerError(null);
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -36,8 +38,8 @@ export default function SessionLog() {
     };
     try {
       const [events, staff] = await Promise.all([
-        fetchSessionLog(config.serverUrl, token, params),
-        fetchStaffNames(config.serverUrl),
+        fetchSessionLog(serverUrl, token, params),
+        fetchStaffNames(serverUrl),
       ]);
       setServerEvents(events);
       const map: Record<string, string> = {};
@@ -47,7 +49,7 @@ export default function SessionLog() {
       console.log("[session-log] refreshServer failed", err);
       setServerError("Showing queued scans only - couldn't reach the server for today's full log.");
     }
-  }, [config, token]);
+  }, [config, serverUrl, token]);
 
   // Belt-and-suspenders: refetch both on a queue change (covers a
   // background sync completing while this tab happens to already be the
@@ -91,7 +93,7 @@ export default function SessionLog() {
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Queued</Text>
                 {queued.map((row) => (
-                  <QueuedRow key={row.id} row={row} serverUrl={config?.serverUrl} />
+                  <QueuedRow key={row.id} row={row} />
                 ))}
               </View>
             )}
@@ -126,7 +128,7 @@ export default function SessionLog() {
   );
 }
 
-function QueuedRow({ row, serverUrl }: { row: PendingScanRow; serverUrl?: string }) {
+function QueuedRow({ row }: { row: PendingScanRow }) {
   const isFailed = row.status === "failed";
   return (
     <View style={styles.row}>
@@ -141,12 +143,8 @@ function QueuedRow({ row, serverUrl }: { row: PendingScanRow; serverUrl?: string
           {isFailed ? row.error : row.qr_code}
         </Text>
       </View>
-      {isFailed && serverUrl ? (
-        <Pressable
-          style={styles.retryButton}
-          onPress={() => retryFailedItem(serverUrl, row.id)}
-          hitSlop={8}
-        >
+      {isFailed ? (
+        <Pressable style={styles.retryButton} onPress={() => retryFailedItem(row.id)} hitSlop={8}>
           <RotateCw size={16} color={colors.slate600} />
         </Pressable>
       ) : (

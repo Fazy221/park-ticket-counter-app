@@ -12,11 +12,13 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { MapPin, ArrowRight } from "lucide-react-native";
+import { MapPin, ArrowRight, Search } from "lucide-react-native";
 import { colors } from "@/theme/colors";
 import { fonts, type } from "@/theme/typography";
 import { fetchCounters, CounterLite } from "@/lib/api";
 import { normalizeServerUrl, setDeviceConfig } from "@/lib/deviceConfig";
+import { setServerUrlFromSetup } from "@/lib/serverConnection";
+import { discoverServerColdStart } from "@/lib/serverDiscovery";
 import { startBackgroundServices } from "@/lib/bootstrap";
 
 type Step = "server" | "counter";
@@ -28,7 +30,19 @@ export default function Setup() {
   const [serverUrl, setServerUrl] = useState("");
   const [counters, setCounters] = useState<CounterLite[]>([]);
   const [loading, setLoading] = useState(false);
+  const [finding, setFinding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const connectTo = async (normalized: string) => {
+    const list = await fetchCounters(normalized);
+    if (list.length === 0) {
+      setError("Connected, but no active counters are set up yet. Add one in the web dashboard first.");
+      return;
+    }
+    setServerUrl(normalized);
+    setCounters(list);
+    setStep("counter");
+  };
 
   const findCounters = async () => {
     setError(null);
@@ -39,14 +53,7 @@ export default function Setup() {
     }
     setLoading(true);
     try {
-      const list = await fetchCounters(normalized);
-      if (list.length === 0) {
-        setError("Connected, but no active counters are set up yet. Add one in the web dashboard first.");
-        return;
-      }
-      setServerUrl(normalized);
-      setCounters(list);
-      setStep("counter");
+      await connectTo(normalized);
     } catch (err) {
       setError("Could not reach that address. Check the device is on the same Wi-Fi as the server.");
     } finally {
@@ -54,9 +61,35 @@ export default function Setup() {
     }
   };
 
+  // Sweeps the local subnet for a host that identifies itself as the
+  // GateMark server (same mechanism serverDiscovery.ts uses afterward to
+  // self-heal a changed IP - see README "Deployment hardening" item 1),
+  // instead of requiring whoever's setting up a new device to go find the
+  // laptop's current IP by hand. Assumes the default port (8090); falls
+  // back to a clear message if nothing answers so they can still type an
+  // address in manually.
+  const findServerAutomatically = async () => {
+    setError(null);
+    setFinding(true);
+    try {
+      const found = await discoverServerColdStart();
+      if (!found) {
+        setError("Couldn't find a GateMark server on this Wi-Fi network. Enter its address manually below.");
+        return;
+      }
+      setServerInput(found);
+      await connectTo(found);
+    } catch {
+      setError("Couldn't find a GateMark server on this Wi-Fi network. Enter its address manually below.");
+    } finally {
+      setFinding(false);
+    }
+  };
+
   const pickCounter = async (counter: CounterLite) => {
     await setDeviceConfig({ serverUrl, counterId: counter.id, counterName: counter.name });
-    startBackgroundServices(serverUrl);
+    setServerUrlFromSetup(serverUrl);
+    startBackgroundServices();
     router.replace("/login");
   };
 
@@ -87,7 +120,7 @@ export default function Setup() {
             <Pressable
               style={[styles.primaryButton, loading && styles.disabled]}
               onPress={findCounters}
-              disabled={loading}
+              disabled={loading || finding}
             >
               {loading ? (
                 <ActivityIndicator color={colors.white} />
@@ -95,6 +128,20 @@ export default function Setup() {
                 <>
                   <Text style={styles.primaryButtonText}>Continue</Text>
                   <ArrowRight size={18} color={colors.white} />
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              style={[styles.secondaryButton, finding && styles.disabled]}
+              onPress={findServerAutomatically}
+              disabled={loading || finding}
+            >
+              {finding ? (
+                <ActivityIndicator color={colors.primary} />
+              ) : (
+                <>
+                  <Search size={16} color={colors.primary} />
+                  <Text style={styles.secondaryButtonText}>Find server automatically</Text>
                 </>
               )}
             </Pressable>
@@ -156,6 +203,18 @@ const styles = StyleSheet.create({
   },
   disabled: { opacity: 0.7 },
   primaryButtonText: { color: colors.white, fontSize: 16, fontFamily: fonts.semibold },
+  secondaryButton: {
+    marginTop: 12,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.slate300,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  secondaryButtonText: { color: colors.primary, fontSize: 15, fontFamily: fonts.semibold },
   counterRow: {
     flexDirection: "row",
     alignItems: "center",
