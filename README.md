@@ -262,7 +262,7 @@ npx expo start
 7. **On-site real-conditions test (router on battery, power cut
    mid-shift, concurrent scans across counters) - not done.**
 
-## Deployment hardening - action plan (items 1-4 done, 5-7 not started)
+## Deployment hardening - action plan (items 1-5 done, 6-7 not started)
 
 Surfaced while working through how this actually gets installed on a
 real venue laptop by someone other than whoever built it, with no
@@ -334,13 +334,26 @@ POS still today) eventually grew for the same reason.
    the app from *outside* a locked session (e.g. via ADB, or Android
    Safe Mode). Revisit with real MDM if this ever scales past a couple
    of devices, per the original note - not needed for one venue.
-5. **Remote-access software needs to survive a reboot, not just the
-   initial install.** Whatever remote-desktop tool (AnyDesk/TeamViewer/
-   Chrome Remote Desktop) gets installed for the on-site setup needs to
-   be configured for unattended access *and* to auto-launch on boot -
-   otherwise the day the laptop reboots on-site is also the day remote
-   access to it is lost, which is precisely the moment something's
-   likely gone wrong.
+5. ~~**Remote-access software needs to survive a reboot, not just the
+   initial install.**~~ **Done** - see "Remote access surviving reboot"
+   under the backend section below for the actual mechanism and why
+   RustDesk specifically. Short version: the original note listed
+   AnyDesk/TeamViewer/Chrome Remote Desktop as candidates without
+   picking one; TeamViewer and AnyDesk both turned out to actively
+   police "commercial use" on their free tiers (session drops, forced
+   waits, eventually a paid-license wall) and this is unambiguously
+   commercial use, so either one risks losing remote access at the
+   worst possible moment for reasons that have nothing to do with the
+   laptop itself. RustDesk doesn't draw that distinction on its free
+   tier at all. Its own "Install to System" step already registers it
+   as a real Windows service - **that part needs no code, same as
+   clicking "Install to System" is the whole fix** - but *believing*
+   that happened when it didn't is an easy on-site mistake, so
+   `backend/verify-remote-access.ps1` checks the actual Windows service
+   state rather than trusting how the RustDesk window looks. **This is
+   a one-time on-site step, same shape as items 2 and 3** - someone
+   still has to install RustDesk, click "Install to System," and set a
+   permanent password once.
 6. **Know the real limits of the app's OTA update path.** `expo-updates`
    and a `production` channel are already configured
    (`mobile/app.json` / `mobile/eas.json`), so future JS-only fixes to
@@ -557,6 +570,78 @@ Windows service instead.
   "Task Manager -> End Task the pocketbase.exe process" check are both
   still worth doing once, the same way item 1's on-device smoke test is
   still open.
+
+### Remote access surviving reboot (deployment hardening item 5)
+
+Fixes "remote-access software needs to survive a reboot" from the
+action plan above - whatever lets someone off-site reach the venue
+laptop for troubleshooting needs to (a) not get switched off or paywalled
+mid-engagement and (b) actually come back up on its own after a reboot,
+not just after the initial install.
+
+- **Why RustDesk, not AnyDesk/TeamViewer/Chrome Remote Desktop** (the
+  three the original note left open): supporting a paying client's
+  on-site laptop is unambiguously "commercial use," and both TeamViewer
+  and AnyDesk's free tiers actively detect and restrict that - session
+  limits, forced waits, and eventually a hard paywall, on a schedule
+  neither vendor publishes and that can change without warning. That's
+  a real risk to lose access at exactly the moment something's gone
+  wrong on-site. Chrome Remote Desktop's unattended mode also requires
+  the controlling device to be signed into the *same* Google account as
+  the host, which works fine solo but is a real constraint if a second
+  person ever needs to help remotely. RustDesk's free/open-source tier
+  draws no personal-vs-commercial distinction at all, needs no account
+  on either end, and is popular enough in bandwidth-constrained regions
+  (including Pakistan) that its default public relay servers are a
+  reasonable bet without also standing up a self-hosted relay.
+- **What "survives a reboot" actually requires, and where the code
+  stops:** two separate things, both one-time GUI steps in RustDesk
+  itself, not anything `pb_hooks/` or a script can do for you:
+  1. **Set a permanent password** (Settings -> Security -> Unattended
+     Access) - without this, someone physically at the laptop has to
+     click "Allow" on every connection, which defeats the point of
+     remote access entirely.
+  2. **Click "Install to System"** (or run `rustdesk.exe --install`
+     from an elevated prompt) - this is what actually registers
+     RustDesk as a Windows service (`HKLM\SYSTEM\CurrentControlSet\
+     Services\RustDesk`, `LocalSystem`, start type Automatic) rather
+     than leaving it as a per-user app that only runs while someone's
+     logged in. This is the actual "survive a reboot" mechanism, and
+     it's a single click - there's no install script to write, unlike
+     item 3's NSSM wrapper, because RustDesk (unlike bare
+     `pocketbase.exe`) already speaks the Windows Service Control
+     Manager protocol natively.
+- **`verify-remote-access.ps1`** exists because the two steps above are
+  easy to *think* you did and be wrong about - the RustDesk window
+  looking normal tells you nothing about whether the service is
+  registered, set to auto-start, or currently running, and none of
+  those three imply the others. Run it (no admin required just to
+  check) after setup and again after an on-site reboot test:
+  ```powershell
+  cd backend
+  .\verify-remote-access.ps1
+  ```
+  It checks `Get-Service RustDesk` directly - the same "ask the SCM,
+  not the app" approach `install-service.ps1`'s own suggested
+  verification (`Get-Service GateMarkServer`) uses for PocketBase - and
+  reports which of "registered," "auto-start," and "currently running"
+  actually hold. It deliberately does **not** parse RustDesk's config
+  file to check whether a permanent password is set - that file is
+  where the password hash lives, and "is a password configured" isn't
+  the same question as "will this survive a reboot" anyway. Confirm
+  that part by eye, once: Settings -> Security -> Unattended Access
+  should show a permanent password already set, not just the rotating
+  one-time code on the main screen.
+- **Verified end-to-end on a real Windows machine:** installed RustDesk,
+  ran `verify-remote-access.ps1` and confirmed it found the registered
+  service, set a permanent password, and connected successfully from
+  the RustDesk Android app on a phone. Everything up to and including a
+  live remote session now has a real confirmation behind it, not just
+  documented mechanics. The one piece still open is the venue-specific
+  form of the same test: reboot the actual on-site laptop and confirm
+  the service comes back and a connection still works afterward -
+  worth doing once on that machine specifically, same as item 3's
+  still-open reboot/kill test for PocketBase.
 
 ## The mobile app (`mobile/`)
 
@@ -1085,14 +1170,21 @@ was - it needs an actual device, actual Wi-Fi, and someone physically
 pulling the plug mid-shift.
 
 Separately, see "Deployment hardening - action plan" above before the
-first real on-site install: items 1-3 (stable server IP, automatic
-backups, auto-restart on boot & crash) are now done. Item 2's offsite
-half and item 3's service install are both still one-time on-site steps
-that need a human to actually run them once - see "Automatic backups"
-for the `-Destination`/Scheduled Task one-liner, and "Auto-restart on
-boot & crash" for the `install-service.ps1` one-liner - neither happens
-on its own just because the code exists. Item 4 (kiosk-locking the
-counter devices so staff can't swipe out of the app or change Wi-Fi) is
-now the highest-value remaining gap, followed by item 5 (remote-access
-tooling surviving a reboot); items 6-7 are lower-urgency/deliberately
-accepted for now (see their entries above).
+first real on-site install: items 1-5 (stable server IP, automatic
+backups, auto-restart on boot & crash, kiosk mode, remote access
+surviving a reboot) are now done. Item 2's offsite backup destination,
+item 3's service install, and item 5's RustDesk "Install to System" +
+permanent password are all still one-time on-site steps that need a
+human to actually run them once - see "Automatic backups," "Auto-restart
+on boot & crash," and "Remote access surviving reboot" respectively for
+the exact one-liners - none of which happens on its own just because the
+code exists. Items 6-7 are the two unstarted pieces: item 6 (OTA
+update-path limits) is a documented, accepted trade-off rather than
+something to build, and item 7 (plain HTTP, not HTTPS, on the LAN) is
+likewise an accepted trade-off for now - see their entries above for
+why. Item 5 has now been verified end-to-end on a real machine
+(service registration, permanent password, and a live connection from
+the RustDesk Android app all confirmed working) - only the
+venue-laptop-specific reboot test remains for it, same as item 3's own
+still-open reboot/kill test. Of everything in this plan, those two
+on-site reboot tests are the most concrete remaining work.
