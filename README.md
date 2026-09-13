@@ -983,16 +983,85 @@ Three profiles - `development`, `preview`, `production` - matching what
 
 `"appVersionSource": "remote"` is set under `cli` so EAS auto-increments
 the Android version code per build instead of it being hand-bumped in
-`app.json`. Signing uses `credentialsSource: "remote"` (the default) -
-EAS holds the keystore in the linked Expo account; the `.jks` file is
-never touched directly, and every later build reuses the same key
-automatically once it's generated.
+`app.json`. `credentialsSource: "remote"` is still EAS CLI's default, but
+**this paragraph describes the project's state before the kiosk-mode
+native module (below) forced a committed `android/` directory into the
+repo - see "Real release keystore" right below for why that changed which
+signing config actually takes effect, and don't trust the "EAS manages it
+remotely, nothing to do" version of this story without checking.**
 
 **Account-specific setup this file can't do on its own** (tied to the
 Expo account, not the repo): `eas login`, `eas init` (writes
 `extra.eas.projectId` into `app.json` - commit that change alongside
-`eas.json`), and the first build's "Generate a new Android Keystore?"
-prompt (answer yes, once - every later build reuses it).
+`eas.json`).
+
+### Real release keystore (fixes: release builds were signed with the debug key)
+
+**The bug:** `android/app/build.gradle`'s `release` build type pointed
+`signingConfig` straight at `signingConfigs.debug` - the same shared,
+publicly-documented debug key every Android project ships with, not a
+real private key. Easy to miss because it's exactly what React Native's
+own generated template ships by default, with a code comment warning you
+right above it ("Caution! In production, you need to generate your own
+keystore file") that's trivial to read past.
+
+**Why `credentialsSource: "remote"` above didn't already cover this:**
+that setting is real, but it only does anything when EAS Build is the one
+generating the native Android project (a managed/CNG project with no
+committed `android/` folder) - in that mode EAS runs its own templated
+Gradle config wired to pull credentials from your Expo account. The
+moment `android/` became a real, committed part of this repo (forced by
+the kiosk-mode native module below - Screen Pinning needed hand-written
+Kotlin, which needs a real native project to live in), EAS Build stopped
+generating that folder and started building the committed one exactly as
+written - including whatever signing config is actually sitting in
+`build.gradle`, remote-credentials setting or not. **If builds happened
+via `eas build --profile production` after the kiosk-mode module landed,
+check the actual signing certificate on a built APK
+(`keytool -printcert -jarfile the.apk`) against the debug cert's
+well-known fingerprint before assuming this was ever using a real key.**
+
+**The fix:** a real keystore now exists
+(`android/app/gatemark-release.keystore`, alias `gatemark`, RSA 2048,
+27-year validity), and `build.gradle`'s `release` signing config reads its
+credentials from `android/keystore.properties` at build time instead of
+hardcoding anything. Neither the keystore file nor `keystore.properties`
+is committed (see `android/.gitignore`) - both were handed to whoever
+requested this fix out-of-band, **and need to end up backed up somewhere
+durable that isn't this repo.** Losing that file means losing the ability
+to ship any future update under this app's existing identity - on a
+sideloaded internal app that "just" means re-sideloading every physical
+device from scratch, not a Play Store lockout, but it's still a from-
+scratch reinstall of every counter device you don't want to repeat for no
+reason.
+
+If `keystore.properties` is missing entirely (a fresh clone that hasn't
+been handed the credentials yet), the build falls back to the debug
+keystore with a loud warning logged at Gradle configuration time rather
+than failing outright - convenient for a checkout that only needs a debug
+build, dangerous if that fallback silently ships. **Treat any release APK
+built without seeing that step complete cleanly as suspect until checked
+against the real certificate's fingerprint.**
+
+**If builds go through `eas build` (cloud) rather than a local
+`./gradlew assembleRelease` / `npx expo run:android --variant release`:**
+the committed `build.gradle` change above is necessary but may not be
+sufficient on its own - EAS's cloud runner needs this exact keystore
+registered against the project too (`eas credentials`, Android, "Set up a
+new keystore" → upload the existing `.keystore` file rather than
+generating a new one, when prompted), or a cloud build will either fail
+to find `keystore.properties` (it isn't in the repo, by design) or, if
+EAS's own remote-credentials flow is invoked, mint a *different* key than
+the one now sitting in `android/app/`. Do this once, from a machine that
+already has the keystore file and its real password, not by guessing.
+**Not verified end-to-end against an actual `eas build` run in the
+session this was written in** - no network access to EAS's build service
+from that environment. The local Gradle wiring was reviewed carefully
+against the standard React Native community signing pattern, but a real
+`eas build --profile production` (or a local `./gradlew assembleRelease`
+if a JDK/Android SDK is available on-hand) and a subsequent
+`keytool -printcert -jarfile` check against the new keystore's fingerprint
+is worth doing once before this is trusted for a real device rollout.
 
 **SDK 52 + dev-client gotcha hit while first building this:** `eas build
 --profile development` auto-installs `expo-dev-client` if it isn't

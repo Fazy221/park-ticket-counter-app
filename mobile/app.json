@@ -22,9 +22,6 @@
       "permissions": [
         "CAMERA",
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "CAMERA",
-        "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ]
     },

@@ -80,6 +80,23 @@ def enableProguardInReleaseBuilds = (findProperty('android.enableProguardInRelea
  */
 def jscFlavor = 'org.webkit:android-jsc:+'
 
+// Real release signing (fixes: production builds were shipping signed with
+// the shared, publicly-known Android debug key - see README's "Deployment
+// hardening" notes on the release keystore). Credentials live in
+// keystore.properties, one level up from this file (android/keystore.properties),
+// which is NOT committed - see android/.gitignore. Falls back to the debug
+// keystore with a loud warning if that file is missing, so a fresh clone
+// without it still builds (as a debug-signed APK) instead of failing outright -
+// but a build in that state must never be the one that actually ships.
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+} else {
+    logger.warn("WARNING: android/keystore.properties not found - release build will fall back to the DEBUG keystore. Do not ship an APK built this way. See README's release-signing notes.")
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -101,15 +118,23 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        if (hasReleaseKeystore) {
+            release {
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Real release key when keystore.properties is present (see above);
+            // debug key otherwise, with the build-time warning already logged.
+            signingConfig hasReleaseKeystore ? signingConfigs.release : signingConfigs.debug
             shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
