@@ -1,0 +1,8 @@
+{
+  "name": "kiosk-mode",
+  "version": "1.0.0",
+  "description": "Local Expo module: Android app-invoked screen pinning (lock task) for GateMark counter devices. See README 'Single-app kiosk mode' (deployment hardening item 4). Not published - lives in mobile/modules/, autolinked automatically because it's under the project's modules/ directory.",
+  "main": "src/KioskModeModule.ts",
+  "license": "UNLICENSED",
+  "private": true
+}

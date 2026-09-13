@@ -36,5 +36,6 @@ backend/pb_data
 
 # Misc
 *.bat
+*.zip
 
 mobile/assets/*.py

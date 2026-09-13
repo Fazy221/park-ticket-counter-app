@@ -1,39 +1,47 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "@expo-google-fonts/inter";
-import { View } from "react-native";
+import { View, AppState, AppStateStatus } from "react-native";
 import { AuthProvider } from "@/context/AuthContext";
 import { initDb } from "@/lib/db";
 import { initServerConnection } from "@/lib/serverConnection";
 import { startBackgroundServices } from "@/lib/bootstrap";
+import { startKioskMode } from "@/lib/kioskMode";
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   /* no-op - fine if this is called after it's already hidden */
 });
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
   });
 
+  if (fontError) console.log("FONT ERROR:", fontError);
+
+  const appState = useRef(AppState.currentState);
+
   useEffect(() => {
-    // The queue table needs to exist before the scan screen can enqueue
-    // anything - init it once, here, ahead of any screen mounting.
     initDb();
 
-    // If this device already went through setup in a previous session,
-    // start draining the queue and watching connectivity right away -
-    // don't wait for a login. (setup.tsx starts these itself the moment
-    // setup completes, for a device's first run.) initServerConnection()
-    // populates serverConnection.ts's live address from AsyncStorage
-    // before the monitors start reading it.
     initServerConnection().then((serverUrl) => {
       if (serverUrl) startBackgroundServices();
     });
+
+    startKioskMode();
+
+    const subscription = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      if (appState.current.match(/inactive|background/) && nextState === "active") {
+        startKioskMode();
+      }
+      appState.current = nextState;
+    });
+
+    return () => subscription.remove();
   }, []);
 
   const onLayout = useCallback(async () => {
@@ -42,7 +50,7 @@ export default function RootLayout() {
     }
   }, [fontsLoaded]);
 
-  if (!fontsLoaded) {
+  if (!fontsLoaded && !fontError) {
     return null;
   }
 

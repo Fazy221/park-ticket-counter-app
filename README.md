@@ -262,7 +262,7 @@ npx expo start
 7. **On-site real-conditions test (router on battery, power cut
    mid-shift, concurrent scans across counters) - not done.**
 
-## Deployment hardening - action plan (items 1-3 done, 4-7 not started)
+## Deployment hardening - action plan (items 1-4 done, 5-7 not started)
 
 Surfaced while working through how this actually gets installed on a
 real venue laptop by someone other than whoever built it, with no
@@ -322,14 +322,18 @@ POS still today) eventually grew for the same reason.
    destination** - someone still has to actually run the install script
    once, as Administrator, after placing `nssm.exe` in `backend/`
    alongside `pocketbase.exe`.
-4. **Counter devices are unrestricted, general-purpose Android
-   phones.** No kiosk mode, no MDM, nothing stopping a staff member
-   from swiping out of the app, changing the Wi-Fi network, or
-   uninstalling it. "Device configuration survives a shift" currently
-   depends entirely on nobody touching settings. Worth locking each
-   device into single-app kiosk mode (Android's built-in Screen
-   Pinning at minimum; a proper MDM/Knox-style lock if this scales
-   past a couple of devices).
+4. ~~**Counter devices are unrestricted, general-purpose Android
+   phones.**~~ **Done** - see "Single-app kiosk mode" under the mobile
+   app section below for the actual mechanism. Short version: the app
+   now pins itself to the screen on launch via Android's app-invoked
+   Screen Pinning (`startLockTask()`), no MDM/Device Owner enrollment
+   needed. **This is the "Screen Pinning at minimum" half of the
+   original note, not the "proper MDM/Knox-style lock" half** - a
+   determined staff member can still escape it via the OS's own
+   Back+Recents unpin gesture, and it does nothing to stop uninstalling
+   the app from *outside* a locked session (e.g. via ADB, or Android
+   Safe Mode). Revisit with real MDM if this ever scales past a couple
+   of devices, per the original note - not needed for one venue.
 5. **Remote-access software needs to survive a reboot, not just the
    initial install.** Whatever remote-desktop tool (AnyDesk/TeamViewer/
    Chrome Remote Desktop) gets installed for the on-site setup needs to
@@ -815,6 +819,111 @@ array. This is a known SDK 52 + dev-client combination, not anything
 project-specific, and is worth rechecking (Compose Compiler's required
 Kotlin version vs. the SDK default) any time `expo-dev-client` gets
 reinstalled after a future SDK bump.
+
+### Single-app kiosk mode (deployment hardening item 4)
+
+Fixes "counter devices are unrestricted, general-purpose Android phones"
+from the action plan above - nothing stopped a staff member from
+swiping out of GateMark to check their own phone, change the Wi-Fi
+network, or uninstall the app mid-shift.
+
+- **`mobile/modules/kiosk-mode/`** - a local Expo module (Android only;
+  these are plain Android counter phones, this item never targeted
+  iOS), not an npm dependency - it's autolinked automatically because it
+  lives under the project's `modules/` directory. `KioskModeModule.kt`
+  wraps three plain Activity calls: `startLockTask()`, `stopLockTask()`,
+  and reading `ActivityManager.getLockTaskModeState()` for status. Built
+  by running the actual `create-expo-module` generator on-site rather
+  than hand-writing the scaffold, since the generator's own template had
+  moved on since this was first drafted: Gradle now applies the
+  `expo-module-gradle-plugin` plugin ID instead of the older
+  `apply from: expoModulesCorePlugin` pattern, and the JS entry point
+  lives at **`src/KioskModeModule.ts`** (referenced from `package.json`'s
+  `"main"`), importing `NativeModule`/`requireNativeModule` from `expo`
+  rather than `expo-modules-core`. The generator also scaffolds `ios/`
+  and `src/KioskModeModule.web.ts` by default - both deleted here, since
+  neither platform is a target for this module.
+- **Deliberately app-invoked Screen Pinning, not Device Owner mode.**
+  Device Owner gives a stronger lock (no OS-level escape gesture at
+  all), but can normally only be granted on a device with no accounts
+  yet added - in practice, "factory-reset it on-site first," a much
+  bigger ask than this item needs for one venue's couple of counter
+  devices. Plain `startLockTask()` needs no enrollment at all and works
+  on any Android 5.0+ phone, at the cost of a real trade-off: **the
+  OS's own Back+Recents unpin gesture still works.** This locks the
+  device against the *casual* case (an idle swipe to check something
+  else, an accidental Settings visit) - see item 4's note in the action
+  plan above for what it still doesn't cover, and revisit with real
+  MDM/Knox only if this ever scales past a couple of devices.
+- **`mobile/src/lib/kioskMode.ts`** - the JS-facing wrapper every screen
+  actually imports. Gates on `Platform.OS === "android"` and wraps the
+  native `require("../../modules/kiosk-mode")` in `try`/`catch`, so a
+  build made before this module existed, or Expo Go (which can never
+  carry a custom native module), degrades to a silent no-op instead of
+  crashing at import time - `kioskModeAvailable` lets a screen check
+  which case it's in. Unaffected by the `src/` restructuring above,
+  since it resolves through `package.json`'s `"main"`, not a hardcoded
+  path to `index.ts`.
+- **`app/_layout.tsx`** pins the app once on cold start, before any
+  setup/login state exists - these are dedicated kiosk devices from the
+  first launch, not just once someone's logged in - and re-arms it on
+  every background→foreground `AppState` transition, which is what
+  catches "someone used the physical unpin gesture, then reopened the
+  app." A deliberate exit via the Settings toggle below never fires that
+  listener (the app never actually backgrounds), so it stays unpinned
+  until someone re-enables it or backgrounds/reopens the app.
+- **`app/settings.tsx`** gained an "Exit kiosk mode" / "Re-enable kiosk
+  mode" row (only rendered when `kioskModeAvailable`), re-read on every
+  screen focus. This is the intended way for a technician to actually
+  reach Android's own Settings app or uninstall the build during
+  maintenance, without needing to know the Back+Recents gesture - a
+  warning line appears whenever the device is left unpinned, since
+  that's the state where it's no different from a normal phone.
+- **Requires a new native build, not just an OTA update** - `expo
+  publish`/`expo-updates` can only ship JS changes (see item 6 above),
+  and this is entirely new native code. Every already-deployed counter
+  device needs a fresh dev/production build installed on it before this
+  does anything; until then it's running exactly as before. **Starting
+  Metro (`npx expo start`) does not build this** - it only serves JS to
+  whatever dev client binary is already on the device/emulator. If that
+  binary predates this module, the app will run fine and kiosk mode will
+  silently no-op (by design - see the try/catch note above), which can
+  look identical to "working but not doing anything." The actual native
+  rebuild step is `npx expo run:android` (device/emulator connected over
+  USB or already running) or `eas build --profile development`, then
+  install the resulting build.
+- **Verified on a real Android device (Samsung Galaxy A24, SM-A245F).**
+  Confirmed on-device: the app pins itself on launch, Home/notification
+  shade are blocked while pinned, the Settings toggle unpins and re-pins
+  correctly, and reopening the app after the physical Back+Recents unpin
+  gesture re-pins it automatically. Item 4 is done.
+- **Two unrelated bugs surfaced during that same verification pass,
+  worth knowing about if a future session hits either symptom again:**
+  - *Blank screen on launch, JS bundle loads fine, no crash or error
+    shown.* Root cause was `useFonts()` only destructuring `[fontsLoaded]`
+    and silently discarding the second `error` element - when font
+    loading throws (in this case, `expo-asset`'s `downloadAsync` failing
+    because `expo-file-system` wasn't linked), `fontsLoaded` just stays
+    `false` forever with no visible error, and `app/_layout.tsx`'s
+    `if (!fontsLoaded) return null` blocks the whole app indefinitely.
+    Fixed by capturing `[fontsLoaded, fontError]`, gating render on
+    `!fontsLoaded && !fontError` instead, and running
+    `npx expo install expo-file-system`. Not specific to this device or
+    to kiosk-mode - any future silent, permanent blank-screen-after-bundle
+    symptom should check this exact pattern first, since a swallowed
+    `useFonts` error looks identical to a dozen scarier hypotheses.
+  - *Local Windows Android builds are fragile at long paths* - both the
+    project's own folder and `GRADLE_USER_HOME` need to stay short
+    (under ~30 characters is safe; deep Gradle transform-cache paths for
+    native "prefab" headers alone can run 150-180 characters). A repo
+    nested a few folders deep under something like `Documents\Work
+    Stuff\Project Name\` is enough to blow past Windows' 260-character
+    limit once combined with node_modules' own native-module paths -
+    this bit the project twice at two different roots (the project
+    folder, then separately the relocated Gradle cache) before both were
+    short enough. `eas build` (cloud, Linux-based) sidesteps this
+    category of problem entirely and is worth defaulting to for future
+    native rebuilds unless there's a specific reason to build locally.
 
 ### What's stubbed or deliberately left out
 

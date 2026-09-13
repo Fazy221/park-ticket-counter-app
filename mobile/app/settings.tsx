@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { View, Text, Pressable, StyleSheet, Alert } from "react-native";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ChevronLeft, ServerCog, Trash2 } from "lucide-react-native";
+import { ChevronLeft, ServerCog, Trash2, Lock, Unlock } from "lucide-react-native";
 import { colors } from "@/theme/colors";
 import { fonts, type } from "@/theme/typography";
 import { useDeviceConfig } from "@/hooks/useDeviceConfig";
@@ -13,6 +14,7 @@ import { forgetAllStaffTokens } from "@/lib/authTokenCache";
 import { getPendingCount } from "@/lib/queue";
 import { stopAutoSync } from "@/lib/queue";
 import { stopConnectivityMonitor } from "@/lib/connectivity";
+import { kioskModeAvailable, isInKioskMode, startKioskMode, stopKioskMode } from "@/lib/kioskMode";
 
 export default function Settings() {
   const router = useRouter();
@@ -25,10 +27,27 @@ export default function Settings() {
   // finished reading AsyncStorage.
   const liveServerUrl = useServerUrl();
   const [pendingCount, setPendingCount] = useState(0);
+  const [kioskLocked, setKioskLocked] = useState(false);
 
   useEffect(() => {
     getPendingCount().then(setPendingCount);
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      setKioskLocked(isInKioskMode());
+    }, [])
+  );
+
+  const toggleKioskMode = () => {
+    if (kioskLocked) {
+      stopKioskMode();
+      setKioskLocked(false);
+    } else {
+      startKioskMode();
+      setKioskLocked(true);
+    }
+  };
 
   const changeServer = () => {
     Alert.alert(
@@ -91,10 +110,31 @@ export default function Settings() {
         </View>
       ) : null}
 
-      {pendingCount > 0 ? (
+            {pendingCount > 0 ? (
         <Text style={styles.pendingWarning}>
           {pendingCount} scan{pendingCount === 1 ? "" : "s"} still waiting to sync.
         </Text>
+      ) : null}
+
+      {kioskModeAvailable ? (
+        <>
+          <Pressable style={styles.row} onPress={toggleKioskMode}>
+            {kioskLocked ? (
+              <Lock size={20} color={colors.slate700} />
+            ) : (
+              <Unlock size={20} color={colors.pending} />
+            )}
+            <Text style={styles.rowText}>
+              {kioskLocked ? "Exit kiosk mode" : "Re-enable kiosk mode"}
+            </Text>
+          </Pressable>
+          {!kioskLocked ? (
+            <Text style={styles.pendingWarning}>
+              This device isn't pinned right now - it can be switched away from or
+              have its Wi-Fi changed. Re-enable before leaving it unattended.
+            </Text>
+          ) : null}
+        </>
       ) : null}
 
       <Pressable style={styles.row} onPress={changeServer}>
