@@ -106,6 +106,13 @@ export type SessionLogEntry = {
   server_time: string;
 };
 
+// What /api/session-log actually returns per page - see fetchSessionLog
+// below, which pages through this so callers keep getting a plain array.
+type SessionLogPage = {
+  results: SessionLogEntry[];
+  has_more: boolean;
+};
+
 // ---- calls -----------------------------------------------------------
 
 export function fetchStaffNames(serverUrl: string): Promise<StaffLite[]> {
@@ -145,13 +152,32 @@ export function undoScan(
   return request(serverUrl, "/api/undo-scan", { method: "POST", body: { ticket_id }, token });
 }
 
-export function fetchSessionLog(
+export async function fetchSessionLog(
   serverUrl: string,
   token: string,
   params: { counter_id: string; from: string; to: string }
 ): Promise<SessionLogEntry[]> {
-  const qs = new URLSearchParams(params).toString();
-  return request<SessionLogEntry[]>(serverUrl, `/api/session-log?${qs}`, { token });
+  // The backend caps each response at 200 rows and signals has_more rather
+  // than returning an unbounded array - loop here so a counter that logs
+  // more than 200 scans in a day still shows up complete on-screen instead
+  // of silently missing its earliest scans. session-log.tsx never needs to
+  // know this happened; it just gets the full array like before.
+  const all: SessionLogEntry[] = [];
+  let offset = 0;
+  // Safety cap so a server bug (has_more stuck true) can't loop forever -
+  // 50 pages is 10,000 rows, comfortably past any real day's scan count.
+  for (let page = 0; page < 50; page++) {
+    const qs = new URLSearchParams({ ...params, offset: String(offset) }).toString();
+    const { results, has_more } = await request<SessionLogPage>(
+      serverUrl,
+      `/api/session-log?${qs}`,
+      { token }
+    );
+    all.push(...results);
+    if (!has_more || results.length === 0) break;
+    offset += results.length;
+  }
+  return all;
 }
 
 export async function checkServerReachable(serverUrl: string): Promise<boolean> {

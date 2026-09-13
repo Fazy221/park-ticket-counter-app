@@ -431,7 +431,10 @@ and the migration applies automatically.
   against `server_time`.
 - **`session_log.pb.js`** - `GET /api/session-log`, scoped by counter and
   an explicit `from`/`to` range (the device computes its own local-midnight
-  boundary, rather than the server guessing a timezone).
+  boundary, rather than the server guessing a timezone). Paged at 200 rows
+  via `offset`/`has_more` rather than returning everything in one response
+  - see "Automated backend test suite" below for why and when this
+  mattered.
 - **`public_lists.pb.js`** - two unauthenticated routes
   (`/api/staff-names`, `/api/counters`) so the login picker and the
   device-setup screen have something to show before any token exists.
@@ -488,7 +491,36 @@ first-scan-as-creation, and validation/auth edge cases.
 and `public_lists.pb.js` have no dedicated coverage yet
 (`ticket_override.pb.js`'s void/reopen paths get incidental coverage
 as fixtures inside `redeem.test.mjs`) - reviewed all four for the
-handler-scope bug below and other issues, found nothing.
+handler-scope bug below and other issues, found nothing at the time.
+
+**Two cosmetic nits found later in that same pair of files, both fixed
+without touching test coverage (still none, per above):**
+
+- `conflict_resolve.pb.js` validated `data.note` against its *trimmed*
+  form (`!data.note.trim()`) but saved the raw, untrimmed string to the
+  event - a resolution note of `"  looks fine  "` would validate and
+  then persist with the leading/trailing whitespace intact. Fixed by
+  trimming once into a `note` const right after `bindBody` and using
+  that for both the validation checks and `event.set("note", note)`, so
+  the two can't drift apart again. `ticket_override.pb.js` has the
+  identical pattern (`!data.note.trim()` check, raw `data.note` stored)
+  and hasn't been fixed - same one-line fix if it's ever worth doing.
+- `session_log.pb.js` hard-capped results at 200 rows
+  (`findRecordsByFilter(..., 200, 0, ...)`) with nothing telling the
+  caller rows were missing - fine for a normal shift, silently wrong for
+  a counter that logs more than 200 scans in a day (the earliest ones
+  for that day would just vanish from the screen). Fixed by accepting an
+  `offset` query param and returning `{ results, has_more }` instead of
+  a bare array; `mobile/src/lib/api.ts`'s `fetchSessionLog()` now loops
+  on `has_more` internally (capped at 50 pages as a runaway-loop guard)
+  so `session-log.tsx` and everything else downstream still just gets a
+  plain `SessionLogEntry[]` like before - **this is a breaking response-
+  shape change for anyone calling `/api/session-log` directly** (e.g. a
+  future web-superadmin screen), not just an internal tweak. The new
+  `PAGE_SIZE` constant is deliberately declared *inside* the handler,
+  not at file scope - see the handler-scope bug immediately below for
+  why a top-level const here would've shipped the exact same failure a
+  third time.
 
 **The bug this suite caught, and the process gap that let it ship
 twice.** Writing these tests surfaced that `UNDO_WINDOW_SECONDS`
@@ -803,6 +835,15 @@ spell out but that fell out of actually building it:
   filter or raw SQL comparison added against PocketBase data: normalize
   to the space-separated form first, or use PocketBase's own date literal
   handling rather than a bare `toISOString()` string.
+- **Session log silently capped at 200 rows for a busy counter - see
+  "Automated backend test suite" above for the full fix.** In short:
+  `session_log.pb.js` now pages (`offset`/`has_more`) instead of
+  returning everything in one response, and `fetchSessionLog()` in
+  `src/lib/api.ts` loops through pages internally so this screen's own
+  code didn't need to change at all - it still just gets a flat array.
+  Only matters once a single counter clears 200 scans in one day; low
+  priority but worth knowing `/api/session-log`'s response shape changed
+  if anything else ever calls it directly.
 
 ### Closing the idempotency gap
 

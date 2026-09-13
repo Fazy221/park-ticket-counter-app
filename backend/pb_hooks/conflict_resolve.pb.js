@@ -28,13 +28,18 @@ routerAdd("POST", "/api/conflict-resolve", (e) => {
   const data = new DynamicModel({ ticket_id: "", note: "" });
   e.bindBody(data);
 
+  // Trim once up front and use this value for both validation and storage -
+  // previously the required/length checks ran against data.note.trim() but
+  // the raw, untrimmed string was what actually got saved on the event.
+  const note = typeof data.note === "string" ? data.note.trim() : data.note;
+
   if (!data.ticket_id) {
     throw new BadRequestError("ticket_id is required");
   }
-  if (!data.note || !data.note.trim()) {
+  if (!note) {
     throw new BadRequestError("A resolution note is required");
   }
-  if (data.note.length > 500) {
+  if (note.length > 500) {
     throw new BadRequestError("Note is too long (max 500 characters)");
   }
   if (e.auth.get("role") !== "superadmin") {
@@ -88,7 +93,7 @@ routerAdd("POST", "/api/conflict-resolve", (e) => {
     event.set("ticket_id", ticket.id);
     event.set("event_type", "conflict_resolved");
     event.set("actor_staff_id", staffId);
-    event.set("note", data.note);
+    event.set("note", note);
     txApp.save(event);
 
     result = { ticket_id: ticket.id, resolved: true };
