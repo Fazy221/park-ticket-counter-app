@@ -59,6 +59,12 @@ gatemark/
 │   │   ├── session_log.pb.js
 │   │   ├── cleanup.pb.js
 │   │   └── public_lists.pb.js
+│   ├── tests/                # Node's test runner, boots a real disposable PocketBase
+│   │   │                      # against the ACTUAL pb_hooks/ above via --hooksDir - nothing
+│   │   │                      # in here is itself loaded by PocketBase; a hook fix belongs
+│   │   │                      # in pb_hooks/, never in here (see below - this bit us once)
+│   │   ├── helpers/harness.mjs
+│   │   └── redeem.test.mjs
 │   ├── pb_migrations/        # schema history, applied in order on server start
 │   │   └── (4 migration files, chronological - schema lives here, not in one file)
 │   └── pb_public/            # web/dist gets copied here to be served as the superadmin PWA
@@ -459,6 +465,61 @@ skips this whole step's migration (you'd just see the default `users`
 collection and nothing else). Phones need the laptop's actual LAN IPv4
 (`ipconfig` -> Wi-Fi adapter), and Windows Firewall needs to allow that
 port on the Private network profile.
+
+### Automated backend test suite (`backend/tests/`)
+
+`cd backend && npm test` runs a Node-native integration suite
+(`node --test tests/`) against a **real, disposable PocketBase
+instance** - not mocks. PocketBase's own maintainer's position is that
+JS `pb_hooks` code can't be meaningfully unit-tested without mocking
+every Go-backed global (`$app`, `DynamicModel`, `Record`, `routerAdd`,
+`$apis`...), so `tests/helpers/harness.mjs` instead boots the actual
+`pocketbase` binary against the actual `pb_hooks/`/`pb_migrations/` via
+`--hooksDir`/`--migrationsDir`, on a random free port, with a
+throwaway `--dir` deleted after the run. Needs the same `pocketbase`/
+`pocketbase.exe` binary as normal local dev (see Prerequisites above) -
+point `POCKETBASE_BIN` at it if it's not sitting in `backend/`.
+
+**`redeem.test.mjs`** (17 tests) covers `/api/redeem`: idempotency-key
+replay, conflict vs. ordinary-duplicate classification, the
+single-writer transaction guarantee under real concurrent requests,
+first-scan-as-creation, and validation/auth edge cases.
+`conflict_resolve.pb.js`, `ticket_override.pb.js`, `session_log.pb.js`,
+and `public_lists.pb.js` have no dedicated coverage yet
+(`ticket_override.pb.js`'s void/reopen paths get incidental coverage
+as fixtures inside `redeem.test.mjs`) - reviewed all four for the
+handler-scope bug below and other issues, found nothing.
+
+**The bug this suite caught, and the process gap that let it ship
+twice.** Writing these tests surfaced that `UNDO_WINDOW_SECONDS`
+(`undo_scan.pb.js`) and `RETENTION_HOURS` (`cleanup.pb.js`) were
+declared at file top level, outside the `routerAdd`/`cronAdd`
+callback. PocketBase's docs are explicit this doesn't work - "Each
+handler function... is serialized and executed in its own isolated
+context as a separate 'program'... you don't have access to custom
+variables and functions declared outside of the handler scope"
+(<https://pocketbase.io/docs/js-overview/#handlers-scope>). Confirmed
+live: referencing the outer const throws `ReferenceError: X is not
+defined` the moment the handler runs - registration itself never
+touches it, so it's invisible until someone actually calls the route
+(surfaces as a 400, "Something went wrong while processing your
+request") or the cron fires (fails silently into PocketBase's internal
+Logs table - nowhere staff would see it). Every `/api/undo-scan` call
+had likely been failing since it shipped; the hourly
+`prune_redeem_attempts` job had likely never once succeeded.
+
+The fix was written correctly the first time - but the corrected files
+were saved to `backend/tests/` instead of `backend/pb_hooks/`.
+PocketBase only loads hooks from `--hooksDir` (`pb_hooks/`), so the
+live server kept running the broken pre-fix code regardless: the same
+bug shipped a second time with zero lines of the actual logic being
+wrong. **If you fix anything in `pb_hooks/`, confirm the changed file
+is physically inside `backend/pb_hooks/`, then rerun `npm test`** - the
+suite boots against the real directory, so it catches this
+immediately (it did: 16/17 passing, with "an undo between the original
+commit and a retry doesn't leak into the replay" failing on exactly
+this, until the files were in the right place).
+
 
 ### Automatic backups (deployment hardening item 2)
 

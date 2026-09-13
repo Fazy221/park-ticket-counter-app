@@ -11,9 +11,13 @@
 // just means a device that's fully offline for a day and a half still gets
 // exact replay instead of falling through to re-processing against
 // possibly-changed ticket state.
-const RETENTION_HOURS = 48;
-
 cronAdd("prune_redeem_attempts", "0 * * * *", () => {
+  // Declared inside the handler, not at file top level - see js-overview's
+  // "Handlers scope": each handler runs as its own isolated program and
+  // can't see variables declared outside it (this bit us for real - see
+  // README/commit history).
+  const RETENTION_HOURS = 48;
+
   // toISOString() gives "...T...Z"; PocketBase's stored "created" values
   // use "... ...Z" (space instead of "T"). This is a raw SQL string
   // comparison, so the mismatch matters the same way it did in

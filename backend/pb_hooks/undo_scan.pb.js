@@ -16,9 +16,13 @@
 // available here on purpose - it goes through the superadmin Tickets
 // screen (plan section 6, #2), which requires a reason and is logged the
 // same way.
-const UNDO_WINDOW_SECONDS = 120;
-
 routerAdd("POST", "/api/undo-scan", (e) => {
+  // Declared inside the handler, not at file top level - see js-overview's
+  // "Handlers scope": each handler runs as its own isolated program and
+  // can't see variables declared outside it (this bit us for real - see
+  // README/commit history).
+  const UNDO_WINDOW_SECONDS = 120;
+
   const data = new DynamicModel({ ticket_id: "" });
   e.bindBody(data);
 
