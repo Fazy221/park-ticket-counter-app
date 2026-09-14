@@ -38,6 +38,25 @@
   nssm.exe into this folder (backend/) before running this script, or
   pass -NssmPath to point at wherever it actually lives.
 
+  This script also opens the port to LAN traffic in Windows Firewall -
+  a separate deployment-hardening gap from item 3 above, found the hard
+  way: a fresh venue's Wi-Fi gets classified "Public" by Windows by
+  default, and Public's firewall profile can carry a master override
+  ("Block all incoming connections, including those on the list of
+  allowed apps") that silently vetoes every inbound allow rule - port-
+  specific or not - while it's active. A rule scoped to exactly this
+  port did nothing on an office network in practice; only switching the
+  whole network to "Private" fixed it immediately, which is a bigger
+  trust change than this app actually needs (Private also loosens
+  network discovery/sharing defaults that have nothing to do with
+  PocketBase). This script gets the same practical result - LAN devices
+  can reach $Port - without touching the network's trust classification:
+  an inbound rule for exactly this port, plus explicitly re-enabling
+  "allow inbound rules to apply" on every profile so that rule isn't
+  silently ignored on whichever profile Windows decides a new venue's
+  Wi-Fi is. Skippable with -SkipFirewall if this is being run somewhere
+  IT already handles firewall policy centrally.
+
 .PARAMETER ServiceName
   Windows service name to install under. Defaults to "GateMarkServer".
 
@@ -55,7 +74,15 @@
 
 .PARAMETER Uninstall
   Stops and removes the service instead of installing it. Does not
-  touch pb_data/ or any backups - only the service registration itself.
+  touch pb_data/ or any backups - only the service registration and
+  the firewall rule this script created.
+
+.PARAMETER SkipFirewall
+  Skip the Windows Firewall configuration described above. Use this on
+  an IT-managed/domain-joined laptop where firewall policy is locked
+  down by Group Policy anyway (the script falls back to a warning
+  automatically if it can't apply the setting, but this avoids the
+  attempt - and its output - entirely).
 
 .EXAMPLE
   # One-time on-site setup, run as Administrator
@@ -64,6 +91,10 @@
 .EXAMPLE
   # Different port, or an nssm.exe that lives somewhere else
   .\install-service.ps1 -Port 8091 -NssmPath "C:\tools\nssm-2.24\win64\nssm.exe"
+
+.EXAMPLE
+  # IT already manages firewall policy on this laptop
+  .\install-service.ps1 -SkipFirewall
 
 .EXAMPLE
   # Undo it
@@ -75,8 +106,11 @@ param(
   [int]$Port = 8090,
   [string]$PocketBasePath,
   [string]$NssmPath,
-  [switch]$Uninstall
+  [switch]$Uninstall,
+  [switch]$SkipFirewall
 )
+
+$firewallRuleName = "GateMark PocketBase"
 
 $ErrorActionPreference = "Stop"
 
@@ -95,6 +129,28 @@ function Assert-Admin {
   }
 }
 
+function Set-GateMarkFirewallAccess {
+  param([int]$Port)
+
+  try {
+    $existingRule = Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue
+    if ($existingRule) {
+      $existingRule | Remove-NetFirewallRule
+    }
+    New-NetFirewallRule -DisplayName $firewallRuleName -Direction Inbound -Protocol TCP `
+      -LocalPort $Port -Action Allow -Profile Any | Out-Null
+
+    # The part that mattered in practice (see .DESCRIPTION) - without
+    # this, the rule above can be silently ignored on whichever profile
+    # Windows assigns a new venue's Wi-Fi.
+    Set-NetFirewallProfile -Profile Domain, Private, Public -AllowInboundRules True
+
+    Write-Host "Firewall: inbound TCP $Port allowed on all network profiles."
+  } catch {
+    Write-Warning "Could not configure Windows Firewall automatically ($($_.Exception.Message)). This laptop may be under IT-managed Group Policy. Ask IT to allow inbound TCP $Port on whatever Wi-Fi this venue uses, or LAN devices won't be able to reach the server - see this script's .DESCRIPTION for why that matters even when the port looks 'allowed.'"
+  }
+}
+
 Assert-Admin
 
 if ($Uninstall) {
@@ -110,7 +166,9 @@ if ($Uninstall) {
   & $NssmPath stop $ServiceName 2>$null | Out-Null
   Start-Sleep -Seconds 2
   & $NssmPath remove $ServiceName confirm | Out-Null
-  Write-Host "Service removed. pb_data/ and everything in it is untouched."
+  Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  Write-Host "Service and firewall rule removed. pb_data/ and everything in it is untouched."
+  Write-Host "Note: the Windows Firewall 'allow inbound rules on all profiles' setting this script enables is left as-is - it's a general environment setting, not something scoped to just this app, so uninstalling doesn't revert it."
   exit 0
 }
 
@@ -131,6 +189,12 @@ if ($existing) {
 
 Write-Host "If a manually-started pocketbase.exe (e.g. from the 'Running it locally' Terminal 1 instructions) is still running, stop it now (Ctrl+C in its terminal) - it's already holding port $Port and the service will fail to bind otherwise."
 Write-Host ""
+
+if ($SkipFirewall) {
+  Write-Host "Skipping Windows Firewall configuration (-SkipFirewall) - make sure inbound TCP $Port is reachable by whatever means IT manages on this laptop."
+} else {
+  Set-GateMarkFirewallAccess -Port $Port
+}
 
 & $NssmPath install $ServiceName $PocketBasePath "serve --http=0.0.0.0:$Port"
 
