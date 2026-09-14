@@ -45,12 +45,21 @@ key every Android project ships with. **This is fixed now:**
   with EAS once** via `eas credentials` (choose "Set up a new keystore" →
   upload the existing file, don't let it generate a fresh one) — otherwise
   the cloud build either can't find the credentials at all or mints a
-  *different* key than the one now sitting in the repo. This wasn't
-  something I could verify against a real `eas build` run or an actual
-  Gradle build from this environment (no network access to either
-  service) — worth a real test build and a
-  `keytool -printcert -jarfile the.apk` check against the new
-  certificate's fingerprint before this goes on a real device.
+  *different* key than the one now sitting in the repo.
+- **Update: verified.** A local Gradle release build
+  (`gradlew assembleRelease`) now completes and produces a real,
+  correctly-signed APK — confirmed by comparing the keystore's own
+  fingerprint (`keytool -list -v -keystore gatemark-release.keystore
+  -alias gatemark`) against the built APK's, which matched exactly.
+  One correction to how to check that: **use `apksigner verify
+  --print-certs`, not `keytool -printcert -jarfile`** — `keytool` only
+  understands old-style JAR signing and reports a correctly-signed APK
+  as "Not a signed jar file," since modern Android release builds sign
+  with Signature Scheme v2/v3, which `keytool` doesn't know how to read.
+  `apksigner` ships in the Android SDK's `build-tools/<version>/`
+  folder. What's still unverified: an actual `eas build` (cloud) run —
+  the local Gradle path above is confirmed working, but the EAS-specific
+  credentials-registration step hasn't been exercised for real.
 
 ### 2. Bootstrapping gap: there's no default login for anyone
 
@@ -61,7 +70,7 @@ staff, which needs... a superadmin already logged in. This isn't a bug,
 just an undocumented first step. You break the chicken-and-egg problem
 through PocketBase's own admin dashboard (separate superuser account,
 `http://127.0.0.1:8090/_/`), where you manually add one `staff` row with
-`role = superadmin` — see step 8 in Part 3 below. After that, everything
+`role = superadmin` — see step 7 in Part 3 below. After that, everything
 else (more staff, counters) gets created through the actual GateMark web
 app like normal.
 
@@ -94,7 +103,7 @@ discover from a support call.
   reboot test for the PocketBase Windows service, and an actual reboot
   test for RustDesk. Both are now trivial to check with the scripts
   already in the repo — do them on install day rather than leaving them
-  open (see Part 3, steps 13–14).
+  open (see Part 3, steps 12–13).
 
 ---
 
@@ -144,7 +153,7 @@ planning to download things on-site.
   (16–32GB is far more than the SQLite backup zips will ever need),
   label them "GateMark Backup A" / "B":
   - Leave drive A plugged into the laptop permanently. Point
-    `backup-offsite.ps1 -Destination` at its drive letter (see step 12
+    `backup-offsite.ps1 -Destination` at its drive letter (see step 11
     below) so every night's backup lands on it automatically.
   - Have your Peshawar contact swap it for drive B roughly weekly, taking
     drive A off-site (his own bag/office, not the park) each time. This is
@@ -157,14 +166,14 @@ planning to download things on-site.
     "do it once and forget it."
 - **Who holds credentials — you and your Peshawar contact, no one else.**
   Set both the RustDesk permanent password and the PocketBase superuser
-  email/password on-site (steps 5 and 13 below), and make sure he keeps
+  email/password on-site (steps 5 and 12 below), and make sure he keeps
   his own copy rather than only you having it — if he's the one who'll
   field a "the scanner's not working" call from venue staff, he needs to
   be able to get in without waiting on you. Don't share either with venue
   staff themselves; the PocketBase superuser account and RustDesk are
   maintenance access, not something a counter staff member or even the
   venue manager needs day-to-day — they only ever need their own PIN and
-  the superadmin web login you set up in step 11.
+  the superadmin web login you set up in step 10.
 
 ---
 
@@ -201,17 +210,11 @@ Do these in order — later steps assume earlier ones are done.
    Browse to `http://127.0.0.1:8090/_/` and confirm you can log in and see
    collections (`staff`, `tickets`, `counters`, etc.).
 
-6. **Open the firewall** (run PowerShell as Administrator):
-   ```powershell
-   New-NetFirewallRule -DisplayName "PocketBase 8090" -Direction Inbound `
-     -Protocol TCP -LocalPort 8090 -Profile Private -Action Allow
-   ```
-
-7. **Note the laptop's LAN IP.** Run `ipconfig`, find the Wi-Fi adapter's
+6. **Note the laptop's LAN IP.** Run `ipconfig`, find the Wi-Fi adapter's
    IPv4 address (e.g. `192.168.1.50`). Write it down — you'll need it for
    every phone's setup screen in Part 4.
 
-8. **Bootstrap the first superadmin.** This is the one step nothing
+7. **Bootstrap the first superadmin.** This is the one step nothing
    automates. In the PocketBase admin dashboard (`http://127.0.0.1:8090/_/`,
    logged in as the superuser from step 5) go to **Collections → staff →
    New record** and create:
@@ -225,26 +228,42 @@ Do these in order — later steps assume earlier ones are done.
    dashboard directly — every account after this gets created through
    GateMark's own Staff screen once you're logged in as this superadmin.
 
-9. **Stop the manual instance.** `Ctrl+C` in the terminal from step 5.
+8. **Stop the manual instance.** `Ctrl+C` in the terminal from step 5.
 
-10. **Install PocketBase as a Windows service** (PowerShell as
-    Administrator):
-    ```powershell
-    cd C:\gatemark\backend
-    .\install-service.ps1
-    ```
-    Verify: `Get-Service GateMarkServer` should show `Running`, and
-    `http://127.0.0.1:8090/api/health` should load in a browser.
+9. **Install PocketBase as a Windows service** (PowerShell as
+   Administrator):
+   ```powershell
+   cd C:\gatemark\backend
+   .\install-service.ps1
+   ```
+   This now also opens the LAN firewall for you — previous versions of
+   this guide had a separate manual `New-NetFirewallRule` step here,
+   scoped only to the Private network profile. That turned out to be a
+   real gap: a venue's Wi-Fi can get classified "Public" by Windows, and
+   Public's firewall carries a master override that silently blocks
+   inbound traffic even with a matching allow rule in place. The script
+   now handles both the rule and that override automatically. If this
+   laptop is ever domain-joined/IT-managed and Group Policy locks
+   firewall settings, the script prints a warning instead of failing —
+   in that case, ask IT to allow inbound TCP 8090, or re-run with
+   `-SkipFirewall` to skip the attempt entirely.
 
-11. **Log into the web app and finish setup.** Browse to
+   Verify: `Get-Service GateMarkServer` should show `Running`, and
+   `http://127.0.0.1:8090/api/health` should load in a browser on the
+   laptop **and** `http://<laptop-IP>:8090/api/health` should load from
+   your phone on the same Wi-Fi — the second check is the one that
+   actually confirms the firewall step worked, not just that the service
+   is running.
+
+10. **Log into the web app and finish setup.** Browse to
     `http://127.0.0.1:8090/` (or `http://<laptop-IP>:8090/` from another
     device on the same network), log in with the superadmin account from
-    step 8, and use the **Staff** and **Counters** screens to create:
+    step 7, and use the **Staff** and **Counters** screens to create:
     - one `counter_staff` PIN account per staff member who'll be scanning
     - one `counters` row per physical counter/gate (e.g. "East Gate",
       "Main Entrance") — these are what each phone gets assigned to next.
 
-12. **Set up offsite backups.** The daily local backup (4am, keeps 14
+11. **Set up offsite backups.** The daily local backup (4am, keeps 14
     days) is already automatic — nothing to do there. Plug in USB drive
     "A" from Part 2's two-drive rotation, note its drive letter (e.g.
     `E:\`), and wire the nightly copy to it:
@@ -255,11 +274,11 @@ Do these in order — later steps assume earlier ones are done.
     ```
     Leave drive A plugged in. Remind your contact this only works if the
     drive letter stays the same after a reboot — worth checking once after
-    the reboot test in step 14, and worth him glancing at
+    the reboot test in step 13, and worth him glancing at
     `backend/backup-offsite.log` the first few times the weekly drive-swap
     happens, in case the drive letter shifted.
 
-13. **Install RustDesk for remote support.** Install it, open
+12. **Install RustDesk for remote support.** Install it, open
     **Settings → Security → Unattended Access** and set a permanent
     password, then click **Install to System** (or run
     `rustdesk.exe --install` from an elevated prompt). Confirm it actually
@@ -272,7 +291,7 @@ Do these in order — later steps assume earlier ones are done.
     permanent password down somewhere secure — this is how you'll reach
     the laptop later without another trip.
 
-14. **Reboot the laptop once, fully, before you leave.** After it comes
+13. **Reboot the laptop once, fully, before you leave.** After it comes
     back up, confirm without touching anything: `http://127.0.0.1:8090/api/health`
     loads, `.\verify-remote-access.ps1` still passes, and you can reach it
     over RustDesk from your own machine. This closes out the two "still
@@ -298,15 +317,15 @@ Repeat steps 3–8 for every counter device.
    QR scanning.
 
 5. **Enter the server address.** On the first-launch setup screen, either
-   type `http://<laptop-LAN-IP>:8090` (the IP from Part 3, step 7) or tap
+   type `http://<laptop-LAN-IP>:8090` (the IP from Part 3, step 6) or tap
    **Find server automatically** while the phone's on the same Wi-Fi as
    the laptop.
 
 6. **Assign this device to a counter.** Pick from the counters you created
-   in Part 3, step 11 — this is per-device, so double check you're not
+   in Part 3, step 10 — this is per-device, so double check you're not
    assigning two phones to the same counter by mistake.
 
-7. **Log in** with one of the staff PIN accounts from step 11.
+7. **Log in** with one of the staff PIN accounts from Part 3, step 10.
 
 8. **Confirm kiosk mode engaged.** The app should pin itself to the
    screen automatically (no Home button, no notification shade). Try the
